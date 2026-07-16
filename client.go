@@ -10,7 +10,7 @@ import (
 
 // Version is the SDK version, kept in lockstep with the other Hot SDKs and
 // bumped as part of the release flow (Go has no version manifest to read).
-const Version = "1.1.3"
+const Version = "1.1.4"
 
 // Config configures a Client.
 type Config struct {
