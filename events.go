@@ -33,22 +33,12 @@ func (r *EventsResource) CallHot(ctx context.Context, fn string, args []any, opt
 	if args == nil {
 		args = []any{}
 	}
-	published, err := r.Publish(ctx, map[string]any{
-		"event_type": "hot:call",
-		"event_data": map[string]any{"fn": fn, "args": args},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	streamID, _ := published["stream_id"].(string)
-	eventID, _ := published["event_id"].(string)
 	waitOpts := &WaitForRunResultOptions{}
 	if opts != nil {
 		waitOpts.Timeout = opts.Timeout
 		waitOpts.OnChunk = opts.OnChunk
 	}
-	run, err := waitForRunResult(ctx, r.transport, streamID, eventID, waitOpts)
+	run, err := waitForCallResult(ctx, r.transport, fn, args, waitOpts)
 	if err != nil {
 		return nil, err
 	}

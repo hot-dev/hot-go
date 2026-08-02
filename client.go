@@ -45,6 +45,7 @@ type Client struct {
 	ServiceKeys *ServiceKeysResource
 	Sessions    *SessionsResource
 	Streams     *StreamsResource
+	Tasks       *TasksResource
 }
 
 // NewClient returns a Client for the Hot API.
@@ -67,6 +68,7 @@ func NewClient(cfg Config) (*Client, error) {
 		ServiceKeys: &ServiceKeysResource{t},
 		Sessions:    &SessionsResource{t},
 		Streams:     &StreamsResource{t},
+		Tasks:       &TasksResource{t},
 	}, nil
 }
 

@@ -63,8 +63,8 @@ func eventTypes(events []StreamEvent) []string {
 
 func TestSubscribeWithEventReconnectsViaStreamID(t *testing.T) {
 	handler := &sseSequenceHandler{t: t, responses: [][]string{
-		{publishedEvent, `{"type":"run:start","run":{"run_id":"r1"}}`},
-		{`{"type":"run:start","run":{"run_id":"r1"}}`, `{"type":"run:stop","run":{"run_id":"r1","result":"done"}}`},
+		{publishedEvent, `{"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}`},
+		{`{"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}`, `{"type":"run:stop","run":{"run_id":"r1","event_id":"e1","result":"done"}}`},
 	}}
 	client := newTestClient(t, handler)
 
@@ -88,7 +88,7 @@ func TestSubscribeWithEventReconnectsViaStreamID(t *testing.T) {
 
 func TestSubscribeWithEventNoReconnectReturnsAfterFirstConnection(t *testing.T) {
 	handler := &sseSequenceHandler{t: t, responses: [][]string{
-		{publishedEvent, `{"type":"run:start","run":{"run_id":"r1"}}`},
+		{publishedEvent, `{"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}`},
 	}}
 	client := newTestClient(t, handler)
 
@@ -108,12 +108,13 @@ func TestSubscribeWithEventNoReconnectReturnsAfterFirstConnection(t *testing.T) 
 
 func TestSubscribeWithEventDedupesRunEventsByRunID(t *testing.T) {
 	handler := &sseSequenceHandler{t: t, responses: [][]string{
-		{publishedEvent, `{"type":"run:start","run":{"run_id":"r1"}}`},
+		{publishedEvent, `{"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}`},
 		{
-			`{"type":"run:start","run":{"run_id":"r1"}}`,
-			`{"type":"run:start","run":{"run_id":"r2"}}`,
-			`{"type":"run:fail","run":{"run_id":"r1","result":"err"}}`,
-			`{"type":"run:fail","run":{"run_id":"r1","result":"err"}}`,
+			`{"type":"run:start","run":{"run_id":"r1","event_id":"e1"}}`,
+			`{"type":"run:start","run":{"run_id":"r2","event_id":"e2"}}`,
+			`{"type":"run:fail","run":{"run_id":"r2","event_id":"e2","result":"other"}}`,
+			`{"type":"run:fail","run":{"run_id":"r1","event_id":"e1","result":"err"}}`,
+			`{"type":"run:fail","run":{"run_id":"r1","event_id":"e1","result":"err"}}`,
 		},
 	}}
 	client := newTestClient(t, handler)
@@ -135,8 +136,8 @@ func TestSubscribeWithEventDedupesRunEventsByRunID(t *testing.T) {
 	if strings.Join(startIDs, ",") != "r1,r2" {
 		t.Errorf("run:start ids = %v, want [r1 r2]", startIDs)
 	}
-	if strings.Join(failIDs, ",") != "r1" {
-		t.Errorf("run:fail ids = %v, want [r1]", failIDs)
+	if strings.Join(failIDs, ",") != "r2,r1" {
+		t.Errorf("run:fail ids = %v, want [r2 r1]", failIDs)
 	}
 }
 

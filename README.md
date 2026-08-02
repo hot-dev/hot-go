@@ -67,6 +67,29 @@ clients should call your own backend route instead of exposing a Hot API key.
 Most management endpoints require an API key. Sessions and service keys are
 permission-scoped and are mainly for event publishing and stream reads.
 
+When code has a run id but does not need the full stream, wait on its durable
+terminal snapshot:
+
+```go
+run, err := client.Runs.Wait(ctx, runID, &hot.WaitForRunOptions{
+	Timeout: 5 * time.Minute,
+})
+```
+
+When a run returns a background task id, wait through the durable task resource:
+
+```go
+task, err := client.Tasks.Wait(ctx, taskID, &hot.WaitForTaskOptions{
+	Timeout: 5 * time.Minute,
+})
+```
+
+The task waiter receives the latest persisted state first and reconnects, so it
+cannot miss a task that completed before subscription. A failed, cancelled, or
+timed-out task returns `*hot.TaskWaitError` with the final task record.
+The task's parent stream also emits durable `task:update` events, which is
+useful when one subscription needs to coordinate several tasks.
+
 ## Errors
 
 Non-2xx API responses return `*hot.APIError` with structured fields:
@@ -90,8 +113,9 @@ requests are never retried.
 `Client` mirrors the Hot API v1 resources:
 
 - `client.Events` — publish, list, get, inspect event runs, and call Hot functions with `CallHot(ctx, fn, args, opts)`
-- `client.Streams` — subscribe to run streams, wait for run results, and publish events atomically (reconnects automatically across the 5-minute SSE timeout; set `DisableReconnect` to opt out)
-- `client.Runs` — list, inspect, and view run stats
+- `client.Streams` — subscribe to run and task updates, wait for run results, and publish events atomically (reconnects automatically across the 5-minute SSE timeout; set `DisableReconnect` to opt out)
+- `client.Runs` — list, inspect, subscribe to, and wait for durable runs
+- `client.Tasks` — get, subscribe to, and wait for durable background tasks
 - `client.Files` — upload, download, list, and delete files (including multipart uploads)
 - `client.Projects` — create, list, update, activate, deactivate, and delete projects
 - `client.Builds` — upload, download, deploy, and look up live/deployed builds
@@ -108,9 +132,8 @@ API endpoints that do not yet have a resource helper.
 `client.Env.Subscribe(ctx)` requires API key credentials and a live API
 pub/sub backend; local API servers without pub/sub return a 503.
 `SubscribeWithEvent` reconnects across the API's 5-minute SSE timeout and
-stops after the first terminal `run:*` event it sees, so use
-`client.Streams.Subscribe` directly if your app expects multiple independent
-runs on the same stream.
+stops after the terminal run correlated to the event it published. Unrelated
+runs on the same stream do not end the iterator.
 
 ## Streaming
 

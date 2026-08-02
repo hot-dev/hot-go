@@ -266,10 +266,9 @@ func TestAPIErrorFallsBackToRetryAfterHeader(t *testing.T) {
 func TestCallHotUsesNestedRunFailureResult(t *testing.T) {
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/v1/events":
-			writeJSON(t, w, envelope(map[string]any{"event_id": "evt_123", "stream_id": "str_123"}))
-		case r.Method == "GET" && r.URL.Path == "/v1/streams/str_123/subscribe":
+		case r.Method == "POST" && r.URL.Path == "/v1/streams/subscribe-with-event":
 			writeSSE(t, w,
+				`{"type":"event:published","event_id":"evt_123","stream_id":"str_123"}`,
 				`{"type":"run:start","run":{"run_id":"run_123","event_id":"evt_123"}}`,
 				`{"type":"run:fail","run":{"run_id":"run_123","event_id":"evt_123","status":"failed","result":{"$err":{"message":"boom"}}}}`,
 			)
@@ -287,10 +286,9 @@ func TestCallHotUsesNestedRunFailureResult(t *testing.T) {
 func TestCallHotSurfacesHotRunFailureShape(t *testing.T) {
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/v1/events":
-			writeJSON(t, w, envelope(map[string]any{"event_id": "evt_123", "stream_id": "str_123"}))
-		case r.Method == "GET" && r.URL.Path == "/v1/streams/str_123/subscribe":
+		case r.Method == "POST" && r.URL.Path == "/v1/streams/subscribe-with-event":
 			writeSSE(t, w,
+				`{"type":"event:published","event_id":"evt_123","stream_id":"str_123"}`,
 				`{"type":"run:start","run":{"run_id":"run_123","event_id":"evt_123"}}`,
 				`{"type":"run:fail","run":{"run_id":"run_123","event_id":"evt_123","status":"failed","result":{"$type":"::hot::run/Failure","$origin":{"function":"::hot::exec/fail"},"$val":{"msg":"too hot","err":"too hot"}}}}`,
 			)
@@ -308,15 +306,14 @@ func TestCallHotSurfacesHotRunFailureShape(t *testing.T) {
 func TestCallHotUnwrapsOkResult(t *testing.T) {
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/v1/events":
+		case r.Method == "POST" && r.URL.Path == "/v1/streams/subscribe-with-event":
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if body["event_type"] != "hot:call" {
 				t.Errorf("event_type = %v", body["event_type"])
 			}
-			writeJSON(t, w, envelope(map[string]any{"event_id": "evt_1", "stream_id": "str_1"}))
-		case r.Method == "GET" && r.URL.Path == "/v1/streams/str_1/subscribe":
 			writeSSE(t, w,
+				`{"type":"event:published","event_id":"evt_1","stream_id":"str_1"}`,
 				`{"type":"run:start","run":{"run_id":"r1","event_id":"evt_1"}}`,
 				`{"type":"run:stop","run":{"run_id":"r1","event_id":"evt_1","result":{"$ok":42}}}`,
 			)

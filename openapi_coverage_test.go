@@ -41,9 +41,12 @@ var coverage = map[string]string{
 	"PUT /v1/projects/{project_id_or_slug}/context/{key}":    "Context.Update",
 	"DELETE /v1/projects/{project_id_or_slug}/context/{key}": "Context.Delete",
 
-	"GET /v1/runs":          "Runs.List",
-	"GET /v1/runs/stats":    "Runs.Stats",
-	"GET /v1/runs/{run_id}": "Runs.Get",
+	"GET /v1/runs":                      "Runs.List",
+	"GET /v1/runs/stats":                "Runs.Stats",
+	"GET /v1/runs/{run_id}":             "Runs.Get",
+	"GET /v1/runs/{run_id}/subscribe":   "Runs.Subscribe",
+	"GET /v1/tasks/{task_id}":           "Tasks.Get",
+	"GET /v1/tasks/{task_id}/subscribe": "Tasks.Subscribe",
 
 	"POST /v1/events":                "Events.Publish",
 	"GET /v1/events":                 "Events.List",
