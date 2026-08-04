@@ -88,6 +88,84 @@ func TestIntegrationSubscribeWithEventEcho(t *testing.T) {
 	}
 }
 
+func TestIntegrationWaitForTaskStartedByEventHandler(t *testing.T) {
+	client := integrationClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	var taskID, handlerRunID, streamID string
+	for event, err := range client.Streams.SubscribeWithEvent(ctx, map[string]any{
+		"event_type": "sdk:task",
+		"event_data": map[string]any{"value": "hello"},
+	}, nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch event.Type() {
+		case "run:fail", "run:cancel":
+			t.Fatalf("run did not complete: %v", event.Run())
+		case "run:stop":
+			run := event.Run()
+			result, _ := run["result"].(map[string]any)
+			work, _ := result["work"].(map[string]any)
+			taskID, _ = work["task"].(string)
+			handlerRunID, _ = run["run_id"].(string)
+			streamID, _ = run["stream_id"].(string)
+		}
+		if taskID != "" {
+			break
+		}
+	}
+	if taskID == "" {
+		t.Fatal("run result did not contain work.task")
+	}
+	handlerRun, err := client.Runs.Wait(ctx, handlerRunID, &WaitForRunOptions{Timeout: 60 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handlerRun["status"] != "succeeded" {
+		t.Fatalf("handler run status = %v, want succeeded", handlerRun["status"])
+	}
+
+	var streamedTask map[string]any
+	for event, err := range client.Streams.Subscribe(ctx, streamID, nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type() != "task:update" {
+			continue
+		}
+		task, _ := event["task"].(map[string]any)
+		if task["task_id"] != taskID {
+			continue
+		}
+		switch task["status"] {
+		case "failed", "cancelled", "timed_out":
+			t.Fatalf("task did not complete: %v", task)
+		case "completed":
+			streamedTask = task
+		}
+		if streamedTask != nil {
+			break
+		}
+	}
+	if streamedTask == nil {
+		t.Fatal("stream ended before task completed")
+	}
+
+	task, err := client.Tasks.Wait(ctx, taskID, &WaitForTaskOptions{Timeout: 60 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task["status"] != "completed" {
+		t.Fatalf("task status = %v, want completed", task["status"])
+	}
+	result, _ := task["result"].(map[string]any)
+	if result["processed"] != "hello" {
+		t.Errorf("task result = %v, want processed=hello", result)
+	}
+}
+
 func TestIntegrationCallHot(t *testing.T) {
 	client := integrationClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
