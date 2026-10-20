@@ -20,16 +20,12 @@ type suborgFixture struct {
 
 func suborgConfig(t *testing.T) suborgFixture {
 	t.Helper()
-	file := os.Getenv("HOT_TEST_SUBORG_FIXTURE")
-	if file == "" {
+	raw := os.Getenv("HOT_TEST_SUBORG_FIXTURE")
+	if raw == "" {
 		t.Skip("run integration/suborg_fixture.py")
 	}
-	raw, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var conf suborgFixture
-	if err = json.Unmarshal(raw, &conf); err != nil {
+	if err := json.Unmarshal([]byte(raw), &conf); err != nil {
 		t.Fatal(err)
 	}
 	return conf
