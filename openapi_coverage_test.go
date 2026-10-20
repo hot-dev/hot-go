@@ -14,6 +14,13 @@ import (
 //
 //	go run ./internal/update-openapi
 var coverage = map[string]string{
+	"GET /v1/management/children":                                            "Management.ListChildren",
+	"POST /v1/management/children":                                           "Management.CreateChild",
+	"PATCH /v1/management/children/{child_id}/state":                         "Management.SetChildState",
+	"POST /v1/management/children/{child_id}/environments":                   "Management.CreateEnvironment",
+	"POST /v1/management/children/{child_id}/environments/{env_id}/api-keys": "Management.CreateAPIKey",
+	"GET /v1/management/usage":                                               "Management.Usage",
+
 	// Public health endpoint, not part of authenticated SDK resources.
 	"GET /status": "",
 
@@ -132,7 +139,16 @@ func TestCoveredOperationsPointToExistingSDKMethods(t *testing.T) {
 			continue
 		}
 		parts := strings.SplitN(sdk, ".", 2)
-		field := reflect.ValueOf(client).Elem().FieldByName(parts[0])
+		var field reflect.Value
+		if parts[0] == "Management" {
+			management, err := NewManagementClient(Config{Token: "hm_test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			field = reflect.ValueOf(management)
+		} else {
+			field = reflect.ValueOf(client).Elem().FieldByName(parts[0])
+		}
 		if !field.IsValid() {
 			t.Errorf("%s -> %s: no resource %q on Client", key, sdk, parts[0])
 			continue

@@ -99,7 +99,7 @@ func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[strin
 			terminal := false
 			for event, err := range source {
 				if err != nil {
-					if streamID == "" || attempts >= options.MaxAttempts {
+					if isAuthorizationError(err) || streamID == "" || attempts >= options.MaxAttempts {
 						yield(nil, err)
 						return
 					}
@@ -188,7 +188,7 @@ func waitForRunResult(ctx context.Context, t *transport, streamID, eventID strin
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					return nil, errors.New("hot: timeout waiting for run result")
 				}
-				if attempts >= options.MaxAttempts {
+				if isAuthorizationError(err) || attempts >= options.MaxAttempts {
 					return nil, err
 				}
 				break
@@ -243,7 +243,7 @@ func waitForCallResult(ctx context.Context, t *transport, fn string, args []any,
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					return nil, errors.New("hot: timeout waiting for run result")
 				}
-				if streamID == "" || attempts >= options.MaxAttempts {
+				if isAuthorizationError(err) || streamID == "" || attempts >= options.MaxAttempts {
 					return nil, err
 				}
 				break

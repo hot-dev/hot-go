@@ -2,6 +2,7 @@ package hot
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -73,4 +74,10 @@ func retryAfterSeconds(value any, headers http.Header) int {
 		}
 	}
 	return 0
+}
+
+// Authorization failures are permanent for this credential, including on reconnect.
+func isAuthorizationError(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && (apiErr.StatusCode == 401 || apiErr.StatusCode == 403)
 }

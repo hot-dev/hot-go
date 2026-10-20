@@ -82,7 +82,7 @@ func (r *RunsResource) Wait(ctx context.Context, runID string, opts *WaitForRunO
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					return nil, errors.New("hot: timeout waiting for run")
 				}
-				if attempts >= options.MaxAttempts {
+				if isAuthorizationError(err) || attempts >= options.MaxAttempts {
 					return nil, err
 				}
 				break

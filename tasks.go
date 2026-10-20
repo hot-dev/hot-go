@@ -67,7 +67,7 @@ func (r *TasksResource) Wait(ctx context.Context, taskID string, opts *WaitForTa
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					return nil, errors.New("hot: timeout waiting for task")
 				}
-				if attempts >= options.MaxAttempts {
+				if isAuthorizationError(err) || attempts >= options.MaxAttempts {
 					return nil, err
 				}
 				break
