@@ -42,11 +42,7 @@ func (r *ServiceKeysResource) Update(ctx context.Context, serviceKeyID string, b
 
 // Revoke revokes one service key.
 func (r *ServiceKeysResource) Revoke(ctx context.Context, serviceKeyID string) error {
-	resp, err := r.transport.requestRaw(ctx, "DELETE", "/service-keys/"+enc(serviceKeyID), nil, nil, nil)
-	if err != nil {
-		return err
-	}
-	return resp.Body.Close()
+	return r.transport.delete(ctx, "/service-keys/"+enc(serviceKeyID), nil)
 }
 
 // RevokeAll revokes every service key.

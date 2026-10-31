@@ -23,19 +23,20 @@ type SubscribeWithEventOptions struct {
 	// Project scopes the subscription to a project id or slug.
 	Project string
 	// DisableReconnect turns off automatic resubscription across the API's
-	// 5-minute SSE timeout.
+	// 5-minute subscription limit and transient failures.
 	DisableReconnect bool
-	// MaxAttempts caps reconnection attempts. Defaults to 5.
+	// MaxAttempts caps consecutive failed connections. Defaults to 5.
 	MaxAttempts int
 }
 
 // WaitForRunResultOptions carries optional parameters for WaitForRunResult.
 type WaitForRunResultOptions struct {
-	// Timeout bounds the wait. Defaults to 60 seconds.
+	// Timeout bounds the whole wait, reconnects included. Defaults to 60
+	// seconds.
 	Timeout time.Duration
 	// OnChunk receives streamed text chunks from the matched run.
 	OnChunk func(text string)
-	// MaxAttempts caps reconnection attempts. Defaults to 5.
+	// MaxAttempts caps consecutive failed connections. Defaults to 5.
 	MaxAttempts int
 }
 
@@ -49,9 +50,21 @@ func (r *StreamsResource) SubscribePost(ctx context.Context, streamID string, op
 	return r.transport.stream(ctx, "POST", "/streams/"+enc(streamID)+"/subscribe", nil, streamQuery(opts))
 }
 
+// PurgeCalls deletes the call traces of every run on the stream and returns
+// the purge outcome (calls_deleted, blob_refs_released, complete).
+func (r *StreamsResource) PurgeCalls(ctx context.Context, streamID string) (map[string]any, error) {
+	envelope, err := r.transport.requestJSON(ctx, "DELETE", "/streams/"+enc(streamID)+"/calls", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return dataObject(envelope), nil
+}
+
 // WaitForRunResult subscribes to a stream and returns the run object once the
-// run created by eventID reaches run:stop. run:fail and run:cancel become
-// errors carrying the run's result message.
+// run created by eventID reaches run:stop. A failure that the handler will
+// retry (status pending_retry) is not final: the wait follows the retry run.
+// A final run:fail or run:cancel returns a *RunWaitError. Timeouts wrap
+// context.DeadlineExceeded and cancellation wraps the context's cause.
 func (r *StreamsResource) WaitForRunResult(ctx context.Context, streamID, eventID string, opts *WaitForRunResultOptions) (map[string]any, error) {
 	return waitForRunResult(ctx, r.transport, streamID, eventID, opts)
 }
@@ -59,18 +72,18 @@ func (r *StreamsResource) WaitForRunResult(ctx context.Context, streamID, eventI
 // SubscribeWithEvent atomically subscribes then publishes an event, yielding
 // stream events until the run completes.
 //
-// The Hot API closes SSE subscriptions after 5 minutes of idle time. Unless
+// The Hot API closes every subscription after 5 minutes. Unless
 // opts.DisableReconnect is set, the SDK resubscribes to the same stream_id and
-// keeps yielding events until a terminal run:stop/run:fail/run:cancel arrives.
-// Replayed run:start and terminal events are deduped by run_id; stream:data
-// chunks are not replayed and may be lost across the disconnect window.
+// keeps yielding events until the final run:stop/run:fail/run:cancel of the
+// published event's run. A run:fail with status pending_retry is not final:
+// iteration continues through the retry run, which links back by
+// origin_run_id. Replayed run:start and terminal events are deduped by
+// run_id; stream:data chunks are not replayed and may be lost across a
+// reconnect. Reconnects follow the policy described on Runs.Wait.
 func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[string]any, opts *SubscribeWithEventOptions) iter.Seq2[StreamEvent, error] {
 	options := SubscribeWithEventOptions{}
 	if opts != nil {
 		options = *opts
-	}
-	if options.MaxAttempts == 0 {
-		options.MaxAttempts = 5
 	}
 	query := projectQuery(options.Project)
 	once := func() iter.Seq2[StreamEvent, error] {
@@ -85,8 +98,8 @@ func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[strin
 		seenStart := map[string]bool{}
 		seenTerminal := map[string]bool{}
 		streamID := ""
-		eventID := ""
-		attempts := 0
+		tracker := newRunTracker("", nil)
+		reconnect := newReconnector("stream", options.MaxAttempts)
 
 		for {
 			var source iter.Seq2[StreamEvent, error]
@@ -96,15 +109,13 @@ func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[strin
 				source = r.Subscribe(ctx, streamID, &StreamOptions{Project: options.Project})
 			}
 
-			terminal := false
+			var conn connection
 			for event, err := range source {
 				if err != nil {
-					if isAuthorizationError(err) || streamID == "" || attempts >= options.MaxAttempts {
-						yield(nil, err)
-						return
-					}
+					conn.err = err
 					break
 				}
+				conn.delivered = true
 
 				switch event.Type() {
 				case "event:published":
@@ -112,8 +123,10 @@ func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[strin
 						streamID = published
 					}
 					if published, ok := event["event_id"].(string); ok {
-						eventID = published
+						tracker.eventID = published
 					}
+				case "stream:complete":
+					conn.complete = true
 				case "run:start":
 					if runID := event.RunID(); runID != "" {
 						if seenStart[runID] {
@@ -128,180 +141,108 @@ func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[strin
 						}
 						seenTerminal[runID] = true
 					}
-					terminal = eventID != "" && eventIDOfRun(event.Run()) == eventID
 				}
+				final := tracker.handle(event)
 
 				if !yield(event, nil) {
 					return
 				}
-				if terminal {
+				if final {
 					return
 				}
 			}
 
-			if terminal {
-				return
-			}
 			if streamID == "" {
-				yield(nil, errors.New("hot: stream ended before event:published was received"))
-				return
+				if ctx.Err() != nil {
+					yield(nil, contextError(ctx, "stream", conn.err))
+					return
+				}
+				if conn.err == nil {
+					conn.err = errors.New("hot: stream ended before event:published was received")
+				}
+				if !retryableBeforePublish(conn.err) {
+					yield(nil, conn.err)
+					return
+				}
 			}
-			if attempts >= options.MaxAttempts {
-				yield(nil, errors.New("hot: stream ended before the published event's run completed"))
+			if err := reconnect.next(ctx, conn, "hot: stream ended before the published event's run completed"); err != nil {
+				yield(nil, err)
 				return
-			}
-
-			attempts++
-			delay := time.Duration(attempts) * 250 * time.Millisecond
-			if delay > 2*time.Second {
-				delay = 2 * time.Second
-			}
-			select {
-			case <-ctx.Done():
-				yield(nil, ctx.Err())
-				return
-			case <-time.After(delay):
 			}
 		}
 	}
 }
 
 func waitForRunResult(ctx context.Context, t *transport, streamID, eventID string, opts *WaitForRunResultOptions) (map[string]any, error) {
-	options := WaitForRunResultOptions{}
-	if opts != nil {
-		options = *opts
-	}
-	if options.Timeout == 0 {
-		options.Timeout = 60 * time.Second
-	}
-	if options.MaxAttempts == 0 {
-		options.MaxAttempts = 5
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
-	defer cancel()
-
-	currentRunID := ""
-	for attempts := 0; ; attempts++ {
-		for event, err := range t.stream(ctx, "GET", "/streams/"+enc(streamID)+"/subscribe", nil, nil) {
-			if err != nil {
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					return nil, errors.New("hot: timeout waiting for run result")
-				}
-				if isAuthorizationError(err) || attempts >= options.MaxAttempts {
-					return nil, err
-				}
-				break
-			}
-			var run map[string]any
-			currentRunID, run, err = handleRunEvent(event, eventID, currentRunID, options.OnChunk)
-			if err != nil || run != nil {
-				return run, err
-			}
-		}
-		if ctx.Err() != nil {
-			return nil, errors.New("hot: timeout waiting for run result")
-		}
-		if attempts >= options.MaxAttempts {
-			return nil, errors.New("hot: stream ended before run completed")
-		}
-	}
+	return waitForPublishedRun(ctx, t, streamID, eventID, nil, opts)
 }
 
 func waitForCallResult(ctx context.Context, t *transport, fn string, args []any, opts *WaitForRunResultOptions) (map[string]any, error) {
-	options := WaitForRunResultOptions{}
-	if opts != nil {
-		options = *opts
-	}
-	if options.Timeout == 0 {
-		options.Timeout = 60 * time.Second
-	}
-	if options.MaxAttempts == 0 {
-		options.MaxAttempts = 5
-	}
-	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
-	defer cancel()
-
-	streamID := ""
-	eventID := ""
-	currentRunID := ""
 	body := map[string]any{
 		"event_type": "hot:call",
 		"event_data": map[string]any{"fn": fn, "args": args},
 	}
-	for attempts := 0; ; attempts++ {
-		method := "POST"
-		path := "/streams/subscribe-with-event"
-		var requestBody any = body
-		if streamID != "" {
-			method = "GET"
-			path = "/streams/" + enc(streamID) + "/subscribe"
-			requestBody = nil
-		}
-		for event, err := range t.stream(ctx, method, path, requestBody, nil) {
-			if err != nil {
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					return nil, errors.New("hot: timeout waiting for run result")
-				}
-				if isAuthorizationError(err) || streamID == "" || attempts >= options.MaxAttempts {
-					return nil, err
-				}
-				break
-			}
-			if event.Type() == "event:published" {
-				streamID, _ = event["stream_id"].(string)
-				eventID, _ = event["event_id"].(string)
-			}
-			if eventID != "" {
-				var run map[string]any
-				currentRunID, run, err = handleRunEvent(event, eventID, currentRunID, options.OnChunk)
-				if err != nil || run != nil {
-					return run, err
-				}
-			}
-		}
-		if ctx.Err() != nil {
-			return nil, errors.New("hot: timeout waiting for run result")
-		}
-		if streamID == "" || eventID == "" {
-			return nil, errors.New("hot: stream ended before event:published was received")
-		}
-		if attempts >= options.MaxAttempts {
-			return nil, errors.New("hot: stream ended before run completed")
-		}
-	}
+	return waitForPublishedRun(ctx, t, "", "", body, opts)
 }
 
-func handleRunEvent(event StreamEvent, eventID, currentRunID string, onChunk func(string)) (string, map[string]any, error) {
-	switch event.Type() {
-	case "run:start":
-		if eventIDOfRun(event.Run()) == eventID {
-			currentRunID = event.RunID()
+// waitForPublishedRun waits for the final run of one published event. With a
+// publish body it first publishes through subscribe-with-event; otherwise it
+// subscribes to streamID and waits for the run of eventID.
+func waitForPublishedRun(ctx context.Context, t *transport, streamID, eventID string, publish map[string]any, opts *WaitForRunResultOptions) (map[string]any, error) {
+	options := WaitForRunResultOptions{}
+	if opts != nil {
+		options = *opts
+	}
+	if options.Timeout == 0 {
+		options.Timeout = 60 * time.Second
+	}
+	ctx, cancel := withWaitTimeout(ctx, options.Timeout)
+	defer cancel()
+
+	tracker := newRunTracker(eventID, options.OnChunk)
+	reconnect := newReconnector("run result", options.MaxAttempts)
+	for {
+		var source iter.Seq2[StreamEvent, error]
+		if streamID == "" {
+			source = t.stream(ctx, "POST", "/streams/subscribe-with-event", publish, nil)
+		} else {
+			source = t.stream(ctx, "GET", "/streams/"+enc(streamID)+"/subscribe", nil, nil)
 		}
-	case "stream:data":
-		if currentRunID != "" && onChunk != nil {
-			if runID, _ := event["run_id"].(string); runID == currentRunID {
-				if payload, ok := event["payload"].(map[string]any); ok {
-					if text, ok := payload["text"].(string); ok {
-						onChunk(text)
-					}
+		var conn connection
+		for event, err := range source {
+			if err != nil {
+				conn.err = err
+				break
+			}
+			conn.delivered = true
+			switch event.Type() {
+			case "event:published":
+				if publish != nil {
+					streamID, _ = event["stream_id"].(string)
+					tracker.eventID, _ = event["event_id"].(string)
 				}
+			case "stream:complete":
+				conn.complete = true
+			}
+			if tracker.handle(event) {
+				return runOutcome(event)
 			}
 		}
-	case "run:stop", "run:fail", "run:cancel":
-		run := event.Run()
-		if run == nil || eventIDOfRun(run) != eventID {
-			return currentRunID, nil, nil
+		if streamID == "" {
+			if ctx.Err() != nil {
+				return nil, contextError(ctx, "run result", conn.err)
+			}
+			if conn.err == nil {
+				conn.err = errors.New("hot: stream ended before event:published was received")
+			}
+			if !retryableBeforePublish(conn.err) {
+				return nil, conn.err
+			}
 		}
-		if event.Type() == "run:fail" {
-			return currentRunID, nil, errors.New("hot: " + runResultMessage(run, "run failed"))
+		if err := reconnect.next(ctx, conn, "hot: stream ended before run completed"); err != nil {
+			return nil, err
 		}
-		if event.Type() == "run:cancel" {
-			return currentRunID, nil, errors.New("hot: " + runResultMessage(run, "run cancelled"))
-		}
-		return currentRunID, run, nil
 	}
-	return currentRunID, nil, nil
 }
 
 func eventIDOfRun(run map[string]any) string {

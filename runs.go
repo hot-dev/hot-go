@@ -2,7 +2,6 @@ package hot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"iter"
 	"net/url"
@@ -14,9 +13,10 @@ type RunsResource struct{ transport *transport }
 
 // WaitForRunOptions configures run waiting.
 type WaitForRunOptions struct {
-	// Timeout bounds the wait. Defaults to 60 seconds.
+	// Timeout bounds the whole wait, reconnects included. Defaults to 60
+	// seconds.
 	Timeout time.Duration
-	// MaxAttempts caps reconnection attempts. Defaults to 5.
+	// MaxAttempts caps consecutive failed connections. Defaults to 5.
 	MaxAttempts int
 }
 
@@ -62,6 +62,13 @@ func (r *RunsResource) Subscribe(ctx context.Context, runID string) iter.Seq2[St
 
 // Wait returns a succeeded run snapshot. Failed and cancelled runs return a
 // *RunWaitError containing the final durable snapshot.
+//
+// Waiters reconnect across the API's 5-minute subscription limit and across
+// transient failures (transport errors, 408, 429, 5xx) with jittered
+// exponential backoff that honours the server's retry_after. Other 4xx
+// responses, such as 401, 403 (including *KeyScopeError) and 404, end the
+// wait at once. MaxAttempts counts consecutive failed connections only. A
+// timeout wraps context.DeadlineExceeded; a cancelled ctx wraps its cause.
 func (r *RunsResource) Wait(ctx context.Context, runID string, opts *WaitForRunOptions) (map[string]any, error) {
 	options := WaitForRunOptions{}
 	if opts != nil {
@@ -70,40 +77,44 @@ func (r *RunsResource) Wait(ctx context.Context, runID string, opts *WaitForRunO
 	if options.Timeout == 0 {
 		options.Timeout = 60 * time.Second
 	}
-	if options.MaxAttempts == 0 {
-		options.MaxAttempts = 5
-	}
-	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
+	ctx, cancel := withWaitTimeout(ctx, options.Timeout)
 	defer cancel()
 
-	for attempts := 0; ; attempts++ {
+	reconnect := newReconnector("run", options.MaxAttempts)
+	for {
+		var conn connection
 		for event, err := range r.Subscribe(ctx, runID) {
 			if err != nil {
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					return nil, errors.New("hot: timeout waiting for run")
-				}
-				if isAuthorizationError(err) || attempts >= options.MaxAttempts {
-					return nil, err
-				}
+				conn.err = err
 				break
 			}
-			if event.Type() != "run:update" {
-				continue
-			}
-			run, _ := event["run"].(map[string]any)
-			status, _ := run["status"].(string)
-			switch status {
-			case "succeeded":
-				return run, nil
-			case "failed", "cancelled":
-				return nil, &RunWaitError{Run: run}
+			conn.delivered = true
+			switch event.Type() {
+			case "stream:complete":
+				conn.complete = true
+			case "run:update":
+				run, _ := event["run"].(map[string]any)
+				status, _ := run["status"].(string)
+				switch status {
+				case "succeeded":
+					return run, nil
+				case "failed", "cancelled":
+					return nil, &RunWaitError{Run: run}
+				}
 			}
 		}
-		if ctx.Err() != nil {
-			return nil, errors.New("hot: timeout waiting for run")
-		}
-		if attempts >= options.MaxAttempts {
-			return nil, errors.New("hot: run subscription ended before the run completed")
+		if err := reconnect.next(ctx, conn, "hot: run subscription ended before the run completed"); err != nil {
+			return nil, err
 		}
 	}
+}
+
+// PurgeCalls deletes the run's call traces and returns the purge outcome
+// (calls_deleted, blob_refs_released, complete).
+func (r *RunsResource) PurgeCalls(ctx context.Context, runID string) (map[string]any, error) {
+	envelope, err := r.transport.requestJSON(ctx, "DELETE", "/runs/"+enc(runID)+"/calls", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return dataObject(envelope), nil
 }

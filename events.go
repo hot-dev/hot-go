@@ -11,10 +11,14 @@ type EventsResource struct{ transport *transport }
 
 // CallHotOptions carries optional parameters for CallHot.
 type CallHotOptions struct {
-	// Timeout bounds the wait for the run result. Defaults to 60 seconds.
+	// Timeout bounds the whole wait for the run result, reconnects included.
+	// Defaults to 60 seconds.
 	Timeout time.Duration
-	// OnChunk receives streamed text chunks from the run.
+	// OnChunk receives streamed text chunks from the run, in order, including
+	// chunks the API delivers before the run's run:start.
 	OnChunk func(text string)
+	// MaxAttempts caps consecutive failed connections. Defaults to 5.
+	MaxAttempts int
 }
 
 // Publish publishes an event and returns the created event data
@@ -28,7 +32,9 @@ func (r *EventsResource) Publish(ctx context.Context, body map[string]any) (map[
 }
 
 // CallHot publishes a hot:call event for fn with args and waits for the run
-// result, unwrapping a {"$ok": ...} result value.
+// result, unwrapping a {"$ok": ...} result value. A failed run returns a
+// *RunWaitError. Reconnects, timeouts and cancellation behave as for
+// Streams.WaitForRunResult.
 func (r *EventsResource) CallHot(ctx context.Context, fn string, args []any, opts *CallHotOptions) (any, error) {
 	if args == nil {
 		args = []any{}
@@ -37,6 +43,7 @@ func (r *EventsResource) CallHot(ctx context.Context, fn string, args []any, opt
 	if opts != nil {
 		waitOpts.Timeout = opts.Timeout
 		waitOpts.OnChunk = opts.OnChunk
+		waitOpts.MaxAttempts = opts.MaxAttempts
 	}
 	run, err := waitForCallResult(ctx, r.transport, fn, args, waitOpts)
 	if err != nil {

@@ -14,7 +14,10 @@ const Version = "1.3.0"
 
 // Config configures a Client.
 type Config struct {
-	// Token is the Hot API key, session token, or service key. Required.
+	// Token is the credential, required. Runtime resources take an
+	// environment API key, session token or service key; Orgs and APIKeys
+	// take an org API key. A token with surrounding whitespace (for example
+	// a trailing newline read from a file) is trimmed.
 	Token string
 	// BaseURL defaults to https://api.hot.dev. For local development with
 	// `hot dev`, use "http://localhost:4681".
@@ -29,10 +32,13 @@ type Config struct {
 }
 
 // Client is a Hot API v1 client. Construct it with NewClient; the resource
-// fields mirror the Hot API resources.
+// fields mirror the Hot API resources. Orgs and APIKeys form the org API and
+// need an org API key; every other resource needs an environment API key,
+// session or service key. Calling the wrong kind returns a *KeyScopeError.
 type Client struct {
 	transport *transport
 
+	APIKeys     *APIKeysResource
 	Builds      *BuildsResource
 	Context     *ContextResource
 	Domains     *DomainsResource
@@ -40,6 +46,7 @@ type Client struct {
 	Events      *EventsResource
 	Files       *FilesResource
 	Org         *OrgResource
+	Orgs        *OrgsResource
 	Projects    *ProjectsResource
 	Runs        *RunsResource
 	ServiceKeys *ServiceKeysResource
@@ -56,6 +63,7 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	return &Client{
 		transport:   t,
+		APIKeys:     &APIKeysResource{t},
 		Builds:      &BuildsResource{t},
 		Context:     &ContextResource{t},
 		Domains:     &DomainsResource{t},
@@ -63,6 +71,7 @@ func NewClient(cfg Config) (*Client, error) {
 		Events:      &EventsResource{t},
 		Files:       &FilesResource{t},
 		Org:         &OrgResource{t},
+		Orgs:        &OrgsResource{t},
 		Projects:    &ProjectsResource{t},
 		Runs:        &RunsResource{t},
 		ServiceKeys: &ServiceKeysResource{t},
@@ -77,6 +86,7 @@ func (c *Client) BaseURL() string { return c.transport.baseURL }
 
 // Request calls a JSON API endpoint that does not yet have a resource helper.
 // path is relative to /v1 and the returned map is the response envelope.
+// Config.Timeout and the 429/5xx retries apply as for resource methods.
 func (c *Client) Request(ctx context.Context, method, path string, body any, query url.Values) (map[string]any, error) {
 	return c.transport.requestJSON(ctx, method, path, body, query)
 }

@@ -10,12 +10,15 @@ import (
 	"time"
 )
 
+// Sub-org tests run against integration/suborg_fixture.py, which owns a
+// disposable server and passes its credentials in HOT_TEST_SUBORG_FIXTURE.
 type suborgFixture struct {
-	RootOrgID       string   `json:"root_org_id"`
-	RootToken       string   `json:"root_token"`
-	ManagementToken string   `json:"management_token"`
-	Revoked         []string `json:"revoked"`
-	Narrowed        []string `json:"narrowed"`
+	RootOrgID string   `json:"root_org_id"`
+	RootEnvID string   `json:"root_env_id"`
+	RootToken string   `json:"root_token"`
+	OrgToken  string   `json:"org_token"`
+	Revoked   []string `json:"revoked"`
+	Narrowed  []string `json:"narrowed"`
 }
 
 func suborgConfig(t *testing.T) suborgFixture {
@@ -30,7 +33,8 @@ func suborgConfig(t *testing.T) suborgFixture {
 	}
 	return conf
 }
-func suborgRuntime(t *testing.T, token string) *Client {
+
+func suborgClient(t *testing.T, token string) *Client {
 	t.Helper()
 	c, err := NewClient(Config{Token: token, BaseURL: os.Getenv("HOT_TEST_BASE_URL"), Timeout: 10 * time.Second})
 	if err != nil {
@@ -38,6 +42,7 @@ func suborgRuntime(t *testing.T, token string) *Client {
 	}
 	return c
 }
+
 func requireDenied(t *testing.T, err error, statuses ...int) {
 	t.Helper()
 	var apiErr *APIError
@@ -51,51 +56,77 @@ func requireDenied(t *testing.T, err error, statuses ...int) {
 	}
 	t.Fatalf("unexpected denial: %v", err)
 }
+
+func requireKeyScope(t *testing.T, err error, scope string) {
+	t.Helper()
+	var scopeErr *KeyScopeError
+	if !errors.As(err, &scopeErr) || scopeErr.RequiredScope != scope || scopeErr.StatusCode != 403 {
+		t.Fatalf("expected key scope error needing %q, got %v", scope, err)
+	}
+}
+
+func suborgSlug(i int) string {
+	return fmt.Sprintf("sdk-go-%d-%d", time.Now().UnixNano()%1e12, i)
+}
+
 func TestSuborgIntegration(t *testing.T) {
 	conf := suborgConfig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	management, err := NewManagementClient(Config{Token: conf.ManagementToken, BaseURL: os.Getenv("HOT_TEST_BASE_URL"), Timeout: 10 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
+	orgs := suborgClient(t, conf.OrgToken)
 	var children, envs []string
+	var keys []map[string]any
 	var clients []*Client
 	defer func() {
 		for _, child := range children {
-			if err := management.SetChildState(ctx, child, "archived"); err != nil {
+			if _, err := orgs.Orgs.Update(ctx, child, map[string]any{"state": "archived"}); err != nil {
 				t.Error(err)
 			}
 		}
 	}()
 	for i := 0; i < 2; i++ {
-		identity := fmt.Sprintf("sdk-go-%d-%d", time.Now().UnixNano(), i)
-		body := map[string]any{"name": "SDK Customer", "slug": identity, "external_id": identity, "idempotency_key": identity}
-		child, err := management.CreateChild(ctx, body)
+		slug := suborgSlug(i)
+		body := map[string]any{"name": "SDK Customer", "slug": slug, "external_id": slug, "idempotency_key": slug}
+		child, err := orgs.Orgs.Create(ctx, body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		childID := child["org"].(map[string]any)["org_id"].(string)
+		org := child["org"].(map[string]any)
+		childID := org["org_id"].(string)
 		children = append(children, childID)
-		replay, err := management.CreateChild(ctx, body)
+		if child["created"] != true || org["parent_org_id"] != conf.RootOrgID || org["external_id"] != slug {
+			t.Fatalf("create: %v", child)
+		}
+		replay, err := orgs.Orgs.Create(ctx, body)
 		if err != nil || replay["created"] != false || replay["org"].(map[string]any)["org_id"] != childID {
 			t.Fatalf("idempotency: %v %v", replay, err)
 		}
-		env, err := management.CreateEnvironment(ctx, childID, map[string]any{"name": "production"})
+		env, err := orgs.Orgs.CreateEnv(ctx, childID, map[string]any{"name": "production"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		again, err := management.CreateEnvironment(ctx, childID, map[string]any{"name": "production"})
+		again, err := orgs.Orgs.CreateEnv(ctx, childID, map[string]any{"name": "production"})
 		if err != nil || again["env_id"] != env["env_id"] {
-			t.Fatalf("environment idempotency: %v", err)
+			t.Fatalf("environment idempotency: %v %v", again, err)
 		}
 		envID := env["env_id"].(string)
 		envs = append(envs, envID)
-		key, err := management.CreateAPIKey(ctx, childID, envID, map[string]any{"description": "sdk", "permissions": map[string]any{"*:*": []string{"*"}}})
+		if got, err := orgs.Orgs.GetEnv(ctx, childID, envID); err != nil || got["org_id"] != childID {
+			t.Fatalf("get env: %v %v", got, err)
+		}
+		listedEnvs, err := orgs.Orgs.ListEnvs(ctx, childID)
+		if err != nil || len(listedEnvs["data"].([]any)) != 2 {
+			t.Fatalf("envs (default and production): %v %v", listedEnvs, err)
+		}
+		key, err := orgs.Orgs.CreateEnvAPIKey(ctx, childID, envID, map[string]any{"description": "sdk", "permissions": map[string]any{"*:*": []string{"*"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		client := suborgRuntime(t, key["token"].(string))
+		if key["scope"] != "env" || key["env_id"] != envID || key["token"] == nil {
+			t.Fatalf("minted key: %v", key)
+		}
+		keys = append(keys, key)
+		client := suborgClient(t, key["token"].(string))
 		clients = append(clients, client)
 		info, err := client.Env.Get(ctx)
 		if err != nil || info["org_id"] != childID {
@@ -106,6 +137,35 @@ func TestSuborgIntegration(t *testing.T) {
 			t.Fatalf("usage scope: %v %v", usage, err)
 		}
 	}
+
+	// Each credential kind calls only its own routes.
+	_, err := orgs.Env.Get(ctx)
+	requireKeyScope(t, err, "env")
+	_, err = clients[0].Orgs.List(ctx, nil)
+	requireKeyScope(t, err, "org")
+	_, err = suborgClient(t, conf.RootToken).APIKeys.Get(ctx, keys[0]["api_key_id"].(string))
+	requireKeyScope(t, err, "org")
+
+	listed, err := orgs.Orgs.List(ctx, nil)
+	if err != nil || listed["pagination"].(map[string]any)["total"].(float64) < 2 {
+		t.Fatalf("children: %v %v", listed, err)
+	}
+	if root, err := orgs.Orgs.Get(ctx, conf.RootOrgID); err != nil || root["parent_org_id"] != nil {
+		t.Fatalf("root: %v %v", root, err)
+	}
+	usage, err := orgs.Orgs.Usage(ctx, conf.RootOrgID)
+	if err != nil || usage["org_id"] != conf.RootOrgID || usage["usage_scope"] != "account" {
+		t.Fatalf("account usage: %v %v", usage, err)
+	}
+	if orgKeys, err := orgs.Orgs.ListAPIKeys(ctx, conf.RootOrgID, nil); err != nil || len(orgKeys["data"].([]any)) == 0 {
+		t.Fatalf("org keys: %v %v", orgKeys, err)
+	}
+	envKeys, err := orgs.Orgs.ListEnvAPIKeys(ctx, children[0], envs[0], nil)
+	if err != nil || len(envKeys["data"].([]any)) != 1 {
+		t.Fatalf("env keys: %v %v", envKeys, err)
+	}
+
+	// Sibling and parent isolation.
 	a, b := clients[0], clients[1]
 	pa, err := a.Projects.Create(ctx, map[string]any{"name": "shared-name"})
 	if err != nil {
@@ -126,15 +186,14 @@ func TestSuborgIntegration(t *testing.T) {
 	}
 	_, err = b.Projects.Get(ctx, pa["project_id"].(string))
 	requireDenied(t, err, 404)
-	_, err = suborgRuntime(t, conf.RootToken).Projects.Get(ctx, pa["project_id"].(string))
+	_, err = suborgClient(t, conf.RootToken).Projects.Get(ctx, pa["project_id"].(string))
 	requireDenied(t, err, 404)
 	eventBody := map[string]any{"event_type": "sdk:isolation", "event_data": map[string]any{"owner": "a"}}
 	event, err := a.Events.Publish(ctx, eventBody)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = a.Events.Get(ctx, event["event_id"].(string))
-	if err != nil {
+	if _, err = a.Events.Get(ctx, event["event_id"].(string)); err != nil {
 		t.Fatal(err)
 	}
 	_, err = b.Events.Get(ctx, event["event_id"].(string))
@@ -143,29 +202,36 @@ func TestSuborgIntegration(t *testing.T) {
 		requireDenied(t, streamErr, 403, 404)
 		break
 	}
-	badManager, err := NewManagementClient(Config{Token: conf.RootToken, BaseURL: os.Getenv("HOT_TEST_BASE_URL")})
+
+	// The org key reaches projects and context in a child environment.
+	scoped := orgs.Orgs.Env(children[0], envs[0])
+	if _, err := scoped.Projects.Create(ctx, map[string]any{"name": "provisioned"}); err != nil {
+		t.Fatal(err)
+	}
+	projects, err := scoped.Projects.List(ctx, nil)
+	if err != nil || len(projects["data"].([]any)) != 2 {
+		t.Fatalf("scoped projects: %v %v", projects, err)
+	}
+	if _, err := scoped.Context.Create(ctx, "provisioned", map[string]any{"key": "sdk.callback", "value": "https://example.test/hot"}); err != nil {
+		t.Fatal(err)
+	}
+	contextVars, err := a.Context.List(ctx, "provisioned")
+	if err != nil || len(contextVars["data"].([]any)) != 1 {
+		t.Fatalf("context seen by the env key: %v %v", contextVars, err)
+	}
+	if err := scoped.Context.Delete(ctx, "provisioned", "sdk.callback"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = orgs.Orgs.Env(conf.RootOrgID, conf.RootEnvID).Projects.List(ctx, nil)
+	requireDenied(t, err, 403, 404)
+
+	// Restricted keys, service keys and sessions.
+	restricted, err := orgs.Orgs.CreateEnvAPIKey(ctx, children[0], envs[0], map[string]any{"description": "event-only", "permissions": map[string]any{"event:sdk:*": []string{"create", "read"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = badManager.ListChildren(ctx, nil)
-	requireDenied(t, err, 401)
-	_, err = suborgRuntime(t, conf.ManagementToken).Env.Get(ctx)
-	requireDenied(t, err, 401)
-	listed, err := management.ListChildren(ctx, nil)
-	if err != nil || listed["total"].(float64) < 2 {
-		t.Fatalf("children: %v %v", listed, err)
-	}
-	usage, err := management.Usage(ctx)
-	if err != nil || usage["root_org_id"] != conf.RootOrgID {
-		t.Fatalf("account usage: %v %v", usage, err)
-	}
-	restricted, err := management.CreateAPIKey(ctx, children[0], envs[0], map[string]any{"description": "event-only", "permissions": map[string]any{"event:sdk:*": []string{"create", "read"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	limited := suborgRuntime(t, restricted["token"].(string))
-	_, err = limited.Events.Publish(ctx, eventBody)
-	if err != nil {
+	limited := suborgClient(t, restricted["token"].(string))
+	if _, err = limited.Events.Publish(ctx, eventBody); err != nil {
 		t.Fatal(err)
 	}
 	_, err = limited.Projects.List(ctx, nil)
@@ -184,9 +250,8 @@ func TestSuborgIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, credential := range []map[string]any{service, session} {
-		client := suborgRuntime(t, credential["token"].(string))
-		_, err = client.Events.Publish(ctx, eventBody)
-		if err != nil {
+		client := suborgClient(t, credential["token"].(string))
+		if _, err = client.Events.Publish(ctx, eventBody); err != nil {
 			t.Fatal(err)
 		}
 		_, err = client.Events.Get(ctx, other["event_id"].(string))
@@ -199,34 +264,64 @@ func TestSuborgIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, credential := range []map[string]any{service, session} {
-		_, err = suborgRuntime(t, credential["token"].(string)).Events.Publish(ctx, eventBody)
+		_, err = suborgClient(t, credential["token"].(string)).Events.Publish(ctx, eventBody)
 		requireDenied(t, err, 401)
 	}
-	if err = management.SetChildState(ctx, children[0], "suspended"); err != nil {
+
+	// Key lifecycle by ID: read, narrow, rotate, revoke.
+	restrictedID := restricted["api_key_id"].(string)
+	if got, err := orgs.APIKeys.Get(ctx, restrictedID); err != nil || got["scope"] != "env" || got["token"] != nil {
+		t.Fatalf("key metadata: %v %v", got, err)
+	}
+	if _, err := orgs.APIKeys.Update(ctx, restrictedID, map[string]any{"permissions": map[string]any{"event:*": []string{"read"}}}); err != nil {
 		t.Fatal(err)
+	}
+	_, err = limited.Events.Publish(ctx, eventBody)
+	requireDenied(t, err, 403)
+	rotated, err := orgs.APIKeys.Rotate(ctx, restrictedID, map[string]any{"overlap_seconds": 0})
+	if err != nil || rotated["token"] == nil || rotated["previous_secret_expires_at"] == nil {
+		t.Fatalf("rotate: %v %v", rotated, err)
+	}
+	_, err = limited.Env.Get(ctx)
+	requireDenied(t, err, 401)
+	renewed := suborgClient(t, rotated["token"].(string))
+	if _, err := renewed.Events.Get(ctx, event["event_id"].(string)); err != nil {
+		t.Fatal(err)
+	}
+	if err := orgs.APIKeys.Revoke(ctx, restrictedID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = renewed.Events.Get(ctx, event["event_id"].(string))
+	requireDenied(t, err, 401)
+
+	// Lifecycle: a suspended child stops; its sibling does not.
+	suspended, err := orgs.Orgs.Update(ctx, children[0], map[string]any{"state": "suspended"})
+	if err != nil || suspended["lifecycle_state"] != "suspended" {
+		t.Fatalf("suspend: %v %v", suspended, err)
 	}
 	_, err = a.Env.Get(ctx)
 	requireDenied(t, err, 401, 403)
 	if _, err = b.Env.Get(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err = management.SetChildState(ctx, children[0], "active"); err != nil {
+	if _, err = orgs.Orgs.Update(ctx, children[0], map[string]any{"state": "active"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = a.Env.Get(ctx); err != nil {
 		t.Fatal(err)
 	}
 }
+
 func TestSuborgIssuerIntegration(t *testing.T) {
 	conf := suborgConfig(t)
 	ctx := context.Background()
 	event := map[string]any{"event_type": "sdk:isolation", "event_data": map[string]any{}}
 	for _, token := range conf.Revoked {
-		_, err := suborgRuntime(t, token).Events.Publish(ctx, event)
+		_, err := suborgClient(t, token).Events.Publish(ctx, event)
 		requireDenied(t, err, 401)
 	}
 	for _, token := range conf.Narrowed {
-		client := suborgRuntime(t, token)
+		client := suborgClient(t, token)
 		if _, err := client.Events.Publish(ctx, event); err != nil {
 			t.Fatal(err)
 		}

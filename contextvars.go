@@ -30,9 +30,5 @@ func (r *ContextResource) Update(ctx context.Context, project, key string, body 
 
 // Delete deletes a context variable.
 func (r *ContextResource) Delete(ctx context.Context, project, key string) error {
-	resp, err := r.transport.requestRaw(ctx, "DELETE", "/projects/"+enc(project)+"/context/"+enc(key), nil, nil, nil)
-	if err != nil {
-		return err
-	}
-	return resp.Body.Close()
+	return r.transport.delete(ctx, "/projects/"+enc(project)+"/context/"+enc(key), nil)
 }
