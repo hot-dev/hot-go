@@ -29,6 +29,7 @@ var coverage = map[string]string{
 	"POST /v1/orgs/{org_id}/api-keys":               "Orgs.CreateAPIKey",
 	"GET /v1/orgs/{org_id}/envs/{env_id}/api-keys":  "Orgs.ListEnvAPIKeys",
 	"POST /v1/orgs/{org_id}/envs/{env_id}/api-keys": "Orgs.CreateEnvAPIKey",
+	"GET /v1/orgs/{org_id}/envs/{env_id}/builds":    "OrgEnv.Builds.List",
 	"GET /v1/orgs/{org_id}/envs/{env_id}/projects":  "OrgEnv.Projects.List",
 	"GET /v1/api-keys/{key_id}":                     "APIKeys.Get",
 	"PATCH /v1/api-keys/{key_id}":                   "APIKeys.Update",
@@ -113,6 +114,10 @@ var coverage = map[string]string{
 	"PUT /v1/files/uploads/{upload_id}/{part_number}": "Files.UploadPart",
 	"POST /v1/files/uploads/{upload_id}/complete":     "Files.CompleteUpload",
 	"DELETE /v1/files/uploads/{upload_id}":            "Files.AbortUpload",
+
+	// Raw bytes of a spilled payload; needs an environment API key, so it is
+	// on Client only and not on the Orgs.Env view.
+	"GET /v1/blobs/{blob_ref_id}/download": "Blobs.Download",
 }
 
 func TestOpenAPIOperationsHaveSDKCoverageOrExplicitIgnore(t *testing.T) {
