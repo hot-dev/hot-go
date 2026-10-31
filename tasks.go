@@ -2,7 +2,6 @@ package hot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"iter"
 	"time"
@@ -13,9 +12,10 @@ type TasksResource struct{ transport *transport }
 
 // WaitForTaskOptions configures task waiting.
 type WaitForTaskOptions struct {
-	// Timeout bounds the wait. Defaults to 60 seconds.
+	// Timeout bounds the whole wait, reconnects included. Defaults to 60
+	// seconds.
 	Timeout time.Duration
-	// MaxAttempts caps reconnection attempts. Defaults to 5.
+	// MaxAttempts caps consecutive failed connections. Defaults to 5.
 	MaxAttempts int
 }
 
@@ -24,6 +24,7 @@ type TaskWaitError struct {
 	Task map[string]any
 }
 
+// Error reports the task's failure message, or its status.
 func (e *TaskWaitError) Error() string {
 	if message := resultMessage(e.Task["result"]); message != "" {
 		return "hot: " + message
@@ -46,7 +47,8 @@ func (r *TasksResource) Subscribe(ctx context.Context, taskID string) iter.Seq2[
 }
 
 // Wait returns a completed task snapshot. Non-success terminal states return
-// a *TaskWaitError containing the final durable snapshot.
+// a *TaskWaitError containing the final durable snapshot. Reconnects,
+// timeouts and cancellation behave as for Runs.Wait.
 func (r *TasksResource) Wait(ctx context.Context, taskID string, opts *WaitForTaskOptions) (map[string]any, error) {
 	options := WaitForTaskOptions{}
 	if opts != nil {
@@ -55,40 +57,34 @@ func (r *TasksResource) Wait(ctx context.Context, taskID string, opts *WaitForTa
 	if options.Timeout == 0 {
 		options.Timeout = 60 * time.Second
 	}
-	if options.MaxAttempts == 0 {
-		options.MaxAttempts = 5
-	}
-	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
+	ctx, cancel := withWaitTimeout(ctx, options.Timeout)
 	defer cancel()
 
-	for attempts := 0; ; attempts++ {
+	reconnect := newReconnector("task", options.MaxAttempts)
+	for {
+		var conn connection
 		for event, err := range r.Subscribe(ctx, taskID) {
 			if err != nil {
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					return nil, errors.New("hot: timeout waiting for task")
-				}
-				if attempts >= options.MaxAttempts {
-					return nil, err
-				}
+				conn.err = err
 				break
 			}
-			if event.Type() != "task:update" {
-				continue
-			}
-			task, _ := event["task"].(map[string]any)
-			status, _ := task["status"].(string)
-			switch status {
-			case "completed":
-				return task, nil
-			case "failed", "cancelled", "timed_out":
-				return nil, &TaskWaitError{Task: task}
+			conn.delivered = true
+			switch event.Type() {
+			case "stream:complete":
+				conn.complete = true
+			case "task:update":
+				task, _ := event["task"].(map[string]any)
+				status, _ := task["status"].(string)
+				switch status {
+				case "completed":
+					return task, nil
+				case "failed", "cancelled", "timed_out":
+					return nil, &TaskWaitError{Task: task}
+				}
 			}
 		}
-		if ctx.Err() != nil {
-			return nil, errors.New("hot: timeout waiting for task")
-		}
-		if attempts >= options.MaxAttempts {
-			return nil, errors.New("hot: task subscription ended before the task completed")
+		if err := reconnect.next(ctx, conn, "hot: task subscription ended before the task completed"); err != nil {
+			return nil, err
 		}
 	}
 }

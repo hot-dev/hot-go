@@ -2,9 +2,11 @@ package hot
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // APIError is the structured error returned for non-2xx Hot API responses.
@@ -21,6 +23,7 @@ type APIError struct {
 	ErrorBody map[string]any
 }
 
+// Error reports the message and status code.
 func (e *APIError) Error() string {
 	return fmt.Sprintf("hot: %s (status %d)", e.Message, e.StatusCode)
 }
@@ -73,4 +76,59 @@ func retryAfterSeconds(value any, headers http.Header) int {
 		}
 	}
 	return 0
+}
+
+// KeyScopeError is returned for 403 key_scope_mismatch: the credential is
+// the wrong kind of key for the route. Org API keys call only the org API
+// (/v1/orgs and /v1/api-keys); environment API keys, sessions and service
+// keys call every other route. It wraps the *APIError, so errors.As with an
+// *APIError also matches.
+type KeyScopeError struct {
+	*APIError
+	// RequiredScope is "org" when the call needs an org API key and "env"
+	// when it needs an environment API key, session or service key.
+	RequiredScope string
+}
+
+// Error reports which kind of key the call needs.
+func (e *KeyScopeError) Error() string {
+	if e.RequiredScope == "org" {
+		return "hot: this call needs an org API key; environment API keys, sessions and service keys only call runtime routes (status 403, key_scope_mismatch)"
+	}
+	return "hot: this call needs an environment API key, session or service key; org API keys only call /v1/orgs and /v1/api-keys (status 403, key_scope_mismatch)"
+}
+
+// Unwrap returns the underlying *APIError.
+func (e *KeyScopeError) Unwrap() error { return e.APIError }
+
+// requiredScope names the kind of key a /v1-relative path needs.
+func requiredScope(path string) string {
+	for _, prefix := range []string{"/orgs", "/api-keys"} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") || strings.HasPrefix(path, prefix+"?") {
+			return "org"
+		}
+	}
+	return "env"
+}
+
+// apiError builds the error for a non-2xx response to a /v1-relative path.
+func apiError(path string, statusCode int, body []byte, headers http.Header) error {
+	apiErr := parseAPIError(statusCode, body, headers)
+	if statusCode == http.StatusForbidden && apiErr.Code == "key_scope_mismatch" {
+		return &KeyScopeError{APIError: apiErr, RequiredScope: requiredScope(path)}
+	}
+	return apiErr
+}
+
+// isPermanentError reports whether err must end a durable wait instead of
+// reconnecting: any 4xx response except 408 and 429 (bad request,
+// authorization including key_scope_mismatch, not found, gone, ...).
+func isPermanentError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	status := apiErr.StatusCode
+	return status >= 400 && status < 500 &&
+		status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
 }

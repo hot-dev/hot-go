@@ -10,10 +10,31 @@ import (
 )
 
 // coverage maps every OpenAPI operation to the SDK method covering it, or ""
-// for operations intentionally left out. Regenerate the fixture with:
+// for operations intentionally left out. "OrgEnv.<Resource>.<Method>" names a
+// method on the environment view returned by Orgs.Env. Regenerate the
+// fixture with:
 //
 //	go run ./internal/update-openapi
 var coverage = map[string]string{
+	"GET /v1/orgs":                                  "Orgs.List",
+	"POST /v1/orgs":                                 "Orgs.Create",
+	"GET /v1/orgs/{org_id}":                         "Orgs.Get",
+	"PATCH /v1/orgs/{org_id}":                       "Orgs.Update",
+	"GET /v1/orgs/{org_id}/usage":                   "Orgs.Usage",
+	"DELETE /v1/orgs/{org_id}/calls":                "Orgs.PurgeCalls",
+	"GET /v1/orgs/{org_id}/envs":                    "Orgs.ListEnvs",
+	"POST /v1/orgs/{org_id}/envs":                   "Orgs.CreateEnv",
+	"GET /v1/orgs/{org_id}/envs/{env_id}":           "Orgs.GetEnv",
+	"GET /v1/orgs/{org_id}/api-keys":                "Orgs.ListAPIKeys",
+	"POST /v1/orgs/{org_id}/api-keys":               "Orgs.CreateAPIKey",
+	"GET /v1/orgs/{org_id}/envs/{env_id}/api-keys":  "Orgs.ListEnvAPIKeys",
+	"POST /v1/orgs/{org_id}/envs/{env_id}/api-keys": "Orgs.CreateEnvAPIKey",
+	"GET /v1/orgs/{org_id}/envs/{env_id}/projects":  "OrgEnv.Projects.List",
+	"GET /v1/api-keys/{key_id}":                     "APIKeys.Get",
+	"PATCH /v1/api-keys/{key_id}":                   "APIKeys.Update",
+	"DELETE /v1/api-keys/{key_id}":                  "APIKeys.Revoke",
+	"POST /v1/api-keys/{key_id}/rotate":             "APIKeys.Rotate",
+
 	// Public health endpoint, not part of authenticated SDK resources.
 	"GET /status": "",
 
@@ -45,6 +66,7 @@ var coverage = map[string]string{
 	"GET /v1/runs/stats":                "Runs.Stats",
 	"GET /v1/runs/{run_id}":             "Runs.Get",
 	"GET /v1/runs/{run_id}/subscribe":   "Runs.Subscribe",
+	"DELETE /v1/runs/{run_id}/calls":    "Runs.PurgeCalls",
 	"GET /v1/tasks/{task_id}":           "Tasks.Get",
 	"GET /v1/tasks/{task_id}/subscribe": "Tasks.Subscribe",
 
@@ -73,12 +95,14 @@ var coverage = map[string]string{
 
 	"GET /v1/env":           "Env.Get",
 	"GET /v1/env/subscribe": "Env.Subscribe",
+	"DELETE /v1/env/calls":  "Env.PurgeCalls",
 
 	"GET /v1/org/usage": "Org.Usage",
 
 	"GET /v1/streams/{stream_id}/subscribe":  "Streams.Subscribe",
 	"POST /v1/streams/{stream_id}/subscribe": "Streams.SubscribePost",
 	"POST /v1/streams/subscribe-with-event":  "Streams.SubscribeWithEvent",
+	"DELETE /v1/streams/{stream_id}/calls":   "Streams.PurgeCalls",
 
 	"GET /v1/files":                                   "Files.List",
 	"GET /v1/files/{file_id}":                         "Files.Get",
@@ -132,7 +156,13 @@ func TestCoveredOperationsPointToExistingSDKMethods(t *testing.T) {
 			continue
 		}
 		parts := strings.SplitN(sdk, ".", 2)
-		field := reflect.ValueOf(client).Elem().FieldByName(parts[0])
+		var field reflect.Value
+		if parts[0] == "OrgEnv" {
+			parts = strings.SplitN(parts[1], ".", 2)
+			field = reflect.ValueOf(client.Orgs.Env("org", "env")).Elem().FieldByName(parts[0])
+		} else {
+			field = reflect.ValueOf(client).Elem().FieldByName(parts[0])
+		}
 		if !field.IsValid() {
 			t.Errorf("%s -> %s: no resource %q on Client", key, sdk, parts[0])
 			continue

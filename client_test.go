@@ -253,7 +253,8 @@ func TestAPIErrorFallsBackToRetryAfterHeader(t *testing.T) {
 		fmt.Fprint(w, "slow down")
 	}))
 
-	_, err := client.Events.List(context.Background(), nil)
+	// POST is not idempotent, so the 503 is returned without a retry.
+	_, err := client.Events.Publish(context.Background(), map[string]any{"event_type": "x"})
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected *APIError, got %v", err)

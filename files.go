@@ -27,11 +27,7 @@ func (r *FilesResource) Get(ctx context.Context, fileID string) (map[string]any,
 
 // Delete deletes a file.
 func (r *FilesResource) Delete(ctx context.Context, fileID string) error {
-	resp, err := r.transport.requestRaw(ctx, "DELETE", "/files/"+enc(fileID), nil, nil, nil)
-	if err != nil {
-		return err
-	}
-	return resp.Body.Close()
+	return r.transport.delete(ctx, "/files/"+enc(fileID), nil)
 }
 
 // Download returns the raw HTTP response streaming the file content. The
@@ -85,9 +81,5 @@ func (r *FilesResource) CompleteUpload(ctx context.Context, uploadID string) (ma
 
 // AbortUpload cancels a multipart upload.
 func (r *FilesResource) AbortUpload(ctx context.Context, uploadID string) error {
-	resp, err := r.transport.requestRaw(ctx, "DELETE", "/files/uploads/"+enc(uploadID), nil, nil, nil)
-	if err != nil {
-		return err
-	}
-	return resp.Body.Close()
+	return r.transport.delete(ctx, "/files/uploads/"+enc(uploadID), nil)
 }

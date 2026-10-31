@@ -200,3 +200,53 @@ func TestIntegrationRunFailureMessage(t *testing.T) {
 		t.Fatalf("err = %v, want message containing %q", err, "sdk fixture failure")
 	}
 }
+
+func TestIntegrationCallHotDeliversEarlyChunks(t *testing.T) {
+	client := integrationClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// The server may send these chunks before run:start; none may be dropped.
+	var chunks []string
+	result, err := client.Events.CallHot(ctx, "::fixture::sdk/stream-chunks", nil, &CallHotOptions{
+		OnChunk: func(text string) { chunks = append(chunks, text) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "done" || strings.Join(chunks, ",") != "a,b,c" {
+		t.Fatalf("result = %v, chunks = %v, want done and a,b,c", result, chunks)
+	}
+}
+
+func TestIntegrationWaitersFollowRetriedRuns(t *testing.T) {
+	client := integrationClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// sdk:flaky fails its first attempt (run:fail, status pending_retry) and
+	// succeeds on the retry, a new run linked by origin_run_id.
+	published, err := client.Events.Publish(ctx, map[string]any{"event_type": "sdk:flaky", "event_data": map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := client.Streams.WaitForRunResult(ctx, published["stream_id"].(string), published["event_id"].(string), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _ := run["result"].(map[string]any)
+	if run["status"] != "succeeded" || result["recovered"] != true || run["origin_run_id"] == nil {
+		t.Fatalf("run = %v, want the succeeded retry run", run)
+	}
+
+	var final StreamEvent
+	for event, err := range client.Streams.SubscribeWithEvent(ctx, map[string]any{"event_type": "sdk:flaky", "event_data": map[string]any{}}, nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		final = event
+	}
+	if final.Type() != "run:stop" || final.RunStatus() != "succeeded" {
+		t.Fatalf("last event = %v, want the retry run's run:stop", final)
+	}
+}

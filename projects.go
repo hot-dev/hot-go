@@ -42,11 +42,7 @@ func (r *ProjectsResource) Update(ctx context.Context, project string, body map[
 
 // Delete deletes a project.
 func (r *ProjectsResource) Delete(ctx context.Context, project string) error {
-	resp, err := r.transport.requestRaw(ctx, "DELETE", "/projects/"+enc(project), nil, nil, nil)
-	if err != nil {
-		return err
-	}
-	return resp.Body.Close()
+	return r.transport.delete(ctx, "/projects/"+enc(project), nil)
 }
 
 // Activate activates a project.

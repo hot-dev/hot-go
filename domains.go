@@ -30,11 +30,7 @@ func (r *DomainsResource) Get(ctx context.Context, domainID string) (map[string]
 
 // Delete deletes a domain.
 func (r *DomainsResource) Delete(ctx context.Context, domainID string) error {
-	resp, err := r.transport.requestRaw(ctx, "DELETE", "/domains/"+enc(domainID), nil, nil, nil)
-	if err != nil {
-		return err
-	}
-	return resp.Body.Close()
+	return r.transport.delete(ctx, "/domains/"+enc(domainID), nil)
 }
 
 // Verify triggers domain verification.
