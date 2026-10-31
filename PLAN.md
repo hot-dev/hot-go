@@ -45,9 +45,9 @@ sse.go          — SSE parser over bufio.Scanner
 streams.go      — Subscribe / SubscribeWithEvent returning iter.Seq2[StreamEvent, error]
                   (plus a lower-level *Subscription with Next() for pre-rangefunc users
                   if we want; start with iter.Seq2 only), WaitForRunResult
-builds.go, contextvars.go, domains.go, env.go, events.go, files.go, org.go,
-projects.go, runs.go, servicekeys.go, sessions.go   — 12 resource namespaces,
-                  ~59 operations, exposed as client.Events.Publish(ctx, ...) etc.
+blobs.go, builds.go, contextvars.go, domains.go, env.go, events.go, files.go,
+org.go, projects.go, runs.go, servicekeys.go, sessions.go   — 13 resource namespaces,
+                  ~60 operations, exposed as client.Events.Publish(ctx, ...) etc.
 ```
 
 Behavioral contract to preserve:

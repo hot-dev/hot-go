@@ -159,6 +159,7 @@ func TestKeyScopeMismatchIsTyped(t *testing.T) {
 		"runtime org usage":  {func() error { _, err := client.Org.Usage(ctx); return err }, "env"},
 		"runtime stream":     {func() error { _, err := client.Runs.Wait(ctx, "r1", nil); return err }, "env"},
 		"runtime raw upload": {func() error { _, err := client.Files.Upload(ctx, "a.txt", []byte("x"), "text/plain"); return err }, "env"},
+		"runtime blob":       {func() error { _, err := client.Blobs.Download(ctx, "b1"); return err }, "env"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

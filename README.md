@@ -169,6 +169,7 @@ waiter policy above.
 - `client.Runs` — list, inspect, subscribe to, wait for, and purge call traces of durable runs
 - `client.Tasks` — get, subscribe to, and wait for durable background tasks
 - `client.Files` — upload, download, list, and delete files (including multipart uploads)
+- `client.Blobs` — download the raw bytes of a large payload spilled to blob storage (environment API key only)
 - `client.Projects` — create, list, update, activate, deactivate, and delete projects
 - `client.Builds` — upload, download, deploy, and look up live/deployed builds
 - `client.Context` — manage encrypted project context variables

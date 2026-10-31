@@ -39,6 +39,7 @@ type Client struct {
 	transport *transport
 
 	APIKeys     *APIKeysResource
+	Blobs       *BlobsResource
 	Builds      *BuildsResource
 	Context     *ContextResource
 	Domains     *DomainsResource
@@ -64,6 +65,7 @@ func NewClient(cfg Config) (*Client, error) {
 	return &Client{
 		transport:   t,
 		APIKeys:     &APIKeysResource{t},
+		Blobs:       &BlobsResource{t},
 		Builds:      &BuildsResource{t},
 		Context:     &ContextResource{t},
 		Domains:     &DomainsResource{t},
