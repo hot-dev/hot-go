@@ -242,3 +242,43 @@ func TestSubscribeWithEventFollowsRetryReplays(t *testing.T) {
 		}
 	})
 }
+
+// A task run started by our run names it as origin_run_id on the same
+// stream, but it is not a retry: only a run of its origin's run_type is.
+const (
+	callRunStop = `{"type":"run:stop","run":{"run_id":"r1","event_id":"e1","run_type":"call","status":"succeeded","retry_attempt":0,"result":"call result"}}`
+	callRunFail = `{"type":"run:fail","run":{"run_id":"r1","event_id":"e1","run_type":"call","status":"failed","retry_attempt":0,"result":{"$err":"call failed"}}}`
+	callStart   = `{"type":"run:start","run":{"run_id":"r1","event_id":"e1","run_type":"call","status":"running","retry_attempt":0}}`
+	taskStop    = `{"type":"run:stop","run":{"run_id":"t1","event_id":"e7","origin_run_id":"r1","run_type":"task","status":"succeeded","retry_attempt":0,"result":"task result"}}`
+	taskChunk   = `{"type":"stream:data","run_id":"t1","data_type":"chunk","payload":{"text":"task"}}`
+)
+
+func TestTaskRunsAreNotRetries(t *testing.T) {
+	shortGrace(t, 10*time.Second)
+	orders := map[string][]string{
+		"task finishes after run:start": {callStart, taskChunk, taskStop, callRunStop},
+		"task finishes first (orphan)":  {taskChunk, taskStop, callStart, callRunStop},
+	}
+	for name, events := range orders {
+		t.Run(name, func(t *testing.T) {
+			result, chunks, err := callWithChunks(t, events...)
+			if err != nil || result != "call result" || len(chunks) != 0 {
+				t.Fatalf("result = %v, chunks = %v, err = %v; the task run must not end or alter the call", result, chunks, err)
+			}
+			client := newTestClient(t, quietAfter(t, append([]string{publishedEvent}, events...)...))
+			streamed, err := collectEvents(t, client, nil)
+			if err != nil || streamed[len(streamed)-1].RunID() != "r1" {
+				t.Fatalf("SubscribeWithEvent ended on %v (err %v)", streamed[len(streamed)-1], err)
+			}
+		})
+	}
+	t.Run("plain failure still fails at once", func(t *testing.T) {
+		for _, events := range [][]string{{callStart, taskStop, callRunFail}, {taskStop, callRunFail}} {
+			_, err, elapsed := waitResult(t, quietAfter(t, events...), 30*time.Second)
+			var runErr *RunWaitError
+			if !errors.As(err, &runErr) || runErr.Run["run_id"] != "r1" || elapsed > 2*time.Second {
+				t.Fatalf("err = %v after %v, want r1's failure at once", err, elapsed)
+			}
+		}
+	})
+}

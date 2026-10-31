@@ -181,6 +181,9 @@ type runTracker struct {
 	onChunk func(text string)
 	// runs holds each tied run and the highest retry_attempt seen for it.
 	runs map[string]int
+	// runTypes holds each tied run's run_type. A retry has its origin's type;
+	// a task run also names the run that started it as origin_run_id.
+	runTypes map[string]string
 	// retried holds tied runs that a tied run names as its origin.
 	retried map[string]bool
 	// orphans holds run events whose origin run is not tied yet, by origin.
@@ -202,6 +205,7 @@ func newRunTracker(eventID string, onChunk func(string)) *runTracker {
 		eventID:  eventID,
 		onChunk:  onChunk,
 		runs:     map[string]int{},
+		runTypes: map[string]string{},
 		retried:  map[string]bool{},
 		orphans:  map[string][]StreamEvent{},
 		buffered: map[string][]string{},
@@ -257,13 +261,17 @@ func (t *runTracker) expire() (StreamEvent, bool) {
 }
 
 // ties reports whether run belongs to the published event, by event id or
-// through its origin run.
+// as a retry of a tied run. Only a run of its origin's run_type is a retry:
+// a task run started by a tied run names it as origin too.
 func (t *runTracker) ties(run map[string]any) bool {
 	if t.eventID != "" && eventIDOfRun(run) == t.eventID {
 		return true
 	}
-	_, tied := t.runs[originOf(run)]
-	return tied
+	origin := originOf(run)
+	if _, tied := t.runs[origin]; !tied {
+		return false
+	}
+	return t.runTypes[origin] == runType(run)
 }
 
 func (t *runTracker) runEvent(event StreamEvent) (StreamEvent, bool) {
@@ -273,10 +281,12 @@ func (t *runTracker) runEvent(event StreamEvent) (StreamEvent, bool) {
 		return nil, false
 	}
 	if !t.ties(run) {
-		if origin := originOf(run); origin != "" {
+		_, originTied := t.runs[originOf(run)]
+		if origin := originOf(run); origin != "" && !originTied {
 			t.orphans[origin] = append(t.orphans[origin], event)
 		} else if event.Type() != "run:start" {
-			// Another event's run finished; its chunks will never be needed.
+			// Another event's run, or a task run a tied run started,
+			// finished; its chunks will never be needed.
 			t.count -= len(t.buffered[runID])
 			delete(t.buffered, runID)
 		}
@@ -288,12 +298,17 @@ func (t *runTracker) runEvent(event StreamEvent) (StreamEvent, bool) {
 		t.runs[runID] = max(seen, attempt)
 	} else {
 		t.runs[runID] = attempt
+		t.runTypes[runID] = runType(run)
 		for _, text := range t.buffered[runID] {
 			t.onChunk(text)
 		}
 		t.count -= len(t.buffered[runID])
 		delete(t.buffered, runID)
-		released = t.orphans[runID]
+		for _, orphan := range t.orphans[runID] {
+			if runType(orphan.Run()) == t.runTypes[runID] {
+				released = append(released, orphan)
+			}
+		}
 		delete(t.orphans, runID)
 		if len(released) > 0 {
 			// A retry of this run is already on the stream.
@@ -349,6 +364,11 @@ func (t *runTracker) outcome(event StreamEvent, runID string, run map[string]any
 func originOf(run map[string]any) string {
 	origin, _ := run["origin_run_id"].(string)
 	return origin
+}
+
+func runType(run map[string]any) string {
+	kind, _ := run["run_type"].(string)
+	return kind
 }
 
 func retryAttempt(run map[string]any) int {
