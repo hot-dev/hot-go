@@ -63,6 +63,9 @@ func (r *StreamsResource) PurgeCalls(ctx context.Context, streamID string) (map[
 // WaitForRunResult subscribes to a stream and returns the run object once the
 // run created by eventID reaches run:stop. A failure that the handler will
 // retry (status pending_retry) is not final: the wait follows the retry run.
+// A failure whose retry_attempt shows a scheduled retry (as the API replays
+// a retried first attempt) is held for 5 seconds, or until the timeout, and
+// returned only if no retry run appears.
 // A final run:fail or run:cancel returns a *RunWaitError. Timeouts wrap
 // context.DeadlineExceeded and cancellation wraps the context's cause.
 func (r *StreamsResource) WaitForRunResult(ctx context.Context, streamID, eventID string, opts *WaitForRunResultOptions) (map[string]any, error) {
@@ -75,11 +78,13 @@ func (r *StreamsResource) WaitForRunResult(ctx context.Context, streamID, eventI
 // The Hot API closes every subscription after 5 minutes. Unless
 // opts.DisableReconnect is set, the SDK resubscribes to the same stream_id and
 // keeps yielding events until the final run:stop/run:fail/run:cancel of the
-// published event's run. A run:fail with status pending_retry is not final:
-// iteration continues through the retry run, which links back by
-// origin_run_id. Replayed run:start and terminal events are deduped by
-// run_id; stream:data chunks are not replayed and may be lost across a
-// reconnect. Reconnects follow the policy described on Runs.Wait.
+// published event's run. A run event with status pending_retry is not
+// final: iteration continues through the retry run, which links back by
+// origin_run_id. A run:fail whose retry_attempt shows a scheduled retry ends
+// the iteration only if no retry run appears within 5 seconds. Replayed
+// run:start and terminal events are deduped by run_id; stream:data chunks
+// are not replayed and may be lost across a reconnect. Reconnects follow the
+// policy described on Runs.Wait.
 func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[string]any, opts *SubscribeWithEventOptions) iter.Seq2[StreamEvent, error] {
 	options := SubscribeWithEventOptions{}
 	if opts != nil {
@@ -102,14 +107,18 @@ func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[strin
 		reconnect := newReconnector("stream", options.MaxAttempts)
 
 		for {
+			connCtx, cancelConn := context.WithCancelCause(ctx)
+			grace := &graceWatch{cancel: cancelConn}
+			grace.sync(tracker)
 			var source iter.Seq2[StreamEvent, error]
 			if streamID == "" {
-				source = once()
+				source = r.transport.stream(connCtx, "POST", "/streams/subscribe-with-event", body, query)
 			} else {
-				source = r.Subscribe(ctx, streamID, &StreamOptions{Project: options.Project})
+				source = r.Subscribe(connCtx, streamID, &StreamOptions{Project: options.Project})
 			}
 
 			var conn connection
+			done := false
 			for event, err := range source {
 				if err != nil {
 					conn.err = err
@@ -142,14 +151,28 @@ func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[strin
 						seenTerminal[runID] = true
 					}
 				}
-				final := tracker.handle(event)
+				_, final := tracker.handle(event)
+				grace.sync(tracker)
 
-				if !yield(event, nil) {
-					return
+				if !yield(event, nil) || final {
+					done = true
+					break
 				}
-				if final {
-					return
-				}
+			}
+			grace.stop()
+			graceEnded := errors.Is(context.Cause(connCtx), errRetryGrace)
+			cancelConn(nil)
+			if done {
+				return
+			}
+			// A held failure that no retry followed in time ends the
+			// iteration; its run:fail was already yielded.
+			if tracker.held != nil && (graceEnded || !time.Now().Before(tracker.holdUntil())) {
+				return
+			}
+			if graceEnded && ctx.Err() == nil {
+				// The retry arrived as the grace ended; resubscribe at once.
+				conn = connection{complete: true}
 			}
 
 			if streamID == "" {
@@ -205,13 +228,17 @@ func waitForPublishedRun(ctx context.Context, t *transport, streamID, eventID st
 	tracker := newRunTracker(eventID, options.OnChunk)
 	reconnect := newReconnector("run result", options.MaxAttempts)
 	for {
+		connCtx, cancelConn := context.WithCancelCause(ctx)
+		grace := &graceWatch{cancel: cancelConn}
+		grace.sync(tracker)
 		var source iter.Seq2[StreamEvent, error]
 		if streamID == "" {
-			source = t.stream(ctx, "POST", "/streams/subscribe-with-event", publish, nil)
+			source = t.stream(connCtx, "POST", "/streams/subscribe-with-event", publish, nil)
 		} else {
-			source = t.stream(ctx, "GET", "/streams/"+enc(streamID)+"/subscribe", nil, nil)
+			source = t.stream(connCtx, "GET", "/streams/"+enc(streamID)+"/subscribe", nil, nil)
 		}
 		var conn connection
+		var final StreamEvent
 		for event, err := range source {
 			if err != nil {
 				conn.err = err
@@ -227,9 +254,27 @@ func waitForPublishedRun(ctx context.Context, t *transport, streamID, eventID st
 			case "stream:complete":
 				conn.complete = true
 			}
-			if tracker.handle(event) {
-				return runOutcome(event)
+			var settled bool
+			if final, settled = tracker.handle(event); settled {
+				break
 			}
+			grace.sync(tracker)
+		}
+		grace.stop()
+		graceEnded := errors.Is(context.Cause(connCtx), errRetryGrace)
+		cancelConn(nil)
+		if final != nil {
+			return runOutcome(final)
+		}
+		// A held failure stands when its grace ends without a retry run, and
+		// at the caller's deadline.
+		if tracker.held != nil && (graceEnded || ctx.Err() != nil || !time.Now().Before(tracker.holdUntil())) {
+			held, _ := tracker.expire()
+			return runOutcome(held)
+		}
+		if graceEnded && ctx.Err() == nil {
+			// The retry arrived as the grace ended; resubscribe at once.
+			conn = connection{complete: true}
 		}
 		if streamID == "" {
 			if ctx.Err() != nil {
@@ -243,6 +288,9 @@ func waitForPublishedRun(ctx context.Context, t *transport, streamID, eventID st
 			}
 		}
 		if err := reconnect.next(ctx, conn, "hot: stream ended before run completed"); err != nil {
+			if held, ok := tracker.expire(); ok {
+				return runOutcome(held)
+			}
 			return nil, err
 		}
 	}

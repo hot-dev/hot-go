@@ -113,7 +113,13 @@ several tasks, call `Tasks.Wait` for each one (for example in goroutines).
   45 seconds counts as a dead connection and reconnects.
 - A run whose handler will retry it ends with `run:fail` and status
   `pending_retry`. That is not final: the waiters follow the retry run, which
-  links back through `origin_run_id`. `OnChunk` receives every chunk of the
+  links back through `origin_run_id`. The API can also replay that first
+  attempt as `run:stop` with status `pending_retry`, or as `run:fail` with
+  status `failed` and a raised `retry_attempt` before the retry run exists.
+  The first is never final either; the second is held for up to 5 seconds
+  (or until the wait's timeout) and reported only if no retry run appears.
+  Failures of handlers without retries, and of last retries, are reported
+  at once. `OnChunk` receives every chunk of the
   matched run in order, including chunks the API sends before `run:start`.
   A final failure returns `*hot.RunWaitError` with the run.
 

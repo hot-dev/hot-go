@@ -152,85 +152,234 @@ func retryableBeforePublish(err error) bool {
 // yet correlated with the published event.
 const maxBufferedChunks = 4096
 
+// retryGrace is how long a failure whose retry_attempt shows a scheduled
+// retry waits for that retry run before it is reported.
+var retryGrace = 5 * time.Second
+
+// errRetryGrace cancels a connection when a held failure's grace ends.
+var errRetryGrace = errors.New("hot: retry grace ended")
+
 // runTracker follows the runs that answer one published event: the event's
-// own run and, after a run:fail with status pending_retry, the retry run,
-// which has a new event_id and links back only by origin_run_id.
+// own run and its retries, which carry new event_ids and link back only by
+// origin_run_id.
 //
-// The API may deliver a run's stream:data and even its terminal event before
-// its run:start (hot publishes run:start late), so chunks for runs not yet
-// correlated are buffered per run_id and delivered in order once the run is
-// correlated, before its result.
+// The API replays a retried first attempt lossily: the same run can arrive
+// as run:fail or run:stop with status pending_retry, or, once the retry is
+// queued but before the retry run exists, as run:fail with status failed and
+// a raised retry_attempt. So pending_retry is never final; a run that a tied
+// run names as its origin is retried and its failure is not final; and a
+// failure whose retry_attempt is above its own attempt number (its origin's
+// retry_attempt, 0 for a first attempt) is held for retryGrace and reported
+// only if no retry run appears by then or by the caller's deadline.
+//
+// The API may also deliver a run's stream:data and even its terminal event
+// before its run:start (hot publishes run:start late), so chunks for runs not
+// yet correlated are buffered per run_id and delivered in order once the run
+// is correlated, before its result.
 type runTracker struct {
-	eventID  string
-	onChunk  func(text string)
-	runs     map[string]bool
+	eventID string
+	onChunk func(text string)
+	// runs holds each tied run and the highest retry_attempt seen for it.
+	runs map[string]int
+	// retried holds tied runs that a tied run names as its origin.
+	retried map[string]bool
+	// orphans holds run events whose origin run is not tied yet, by origin.
+	orphans  map[string][]StreamEvent
+	held     *heldFailure
 	buffered map[string][]string
 	count    int
 }
 
+// heldFailure is a tied run:fail that may still be retried.
+type heldFailure struct {
+	runID string
+	event StreamEvent
+	until time.Time
+}
+
 func newRunTracker(eventID string, onChunk func(string)) *runTracker {
-	return &runTracker{eventID: eventID, onChunk: onChunk, runs: map[string]bool{}, buffered: map[string][]string{}}
+	return &runTracker{
+		eventID:  eventID,
+		onChunk:  onChunk,
+		runs:     map[string]int{},
+		retried:  map[string]bool{},
+		orphans:  map[string][]StreamEvent{},
+		buffered: map[string][]string{},
+	}
 }
 
-// correlate reports whether run belongs to the published event, recording it
-// and flushing its buffered chunks the first time.
-func (t *runTracker) correlate(run map[string]any) bool {
-	runID, _ := run["run_id"].(string)
-	if runID == "" || t.eventID == "" {
-		return false
-	}
-	if t.runs[runID] {
-		return true
-	}
-	origin, _ := run["origin_run_id"].(string)
-	if eventIDOfRun(run) != t.eventID && (origin == "" || !t.runs[origin]) {
-		return false
-	}
-	t.runs[runID] = true
-	for _, text := range t.buffered[runID] {
-		t.onChunk(text)
-	}
-	t.count -= len(t.buffered[runID])
-	delete(t.buffered, runID)
-	return true
-}
-
-// handle records event and reports whether it is the final event for the
-// published event: the correlated run's run:stop, run:cancel, or a run:fail
-// that will not be retried.
-func (t *runTracker) handle(event StreamEvent) bool {
+// handle records event and returns the event that settles the wait, if any:
+// the tied run's run:stop or run:cancel, or a run:fail that will not be
+// retried. Releasing orphaned retry events can settle it with an event that
+// arrived earlier.
+func (t *runTracker) handle(event StreamEvent) (StreamEvent, bool) {
 	switch event.Type() {
-	case "run:start":
-		t.correlate(event.Run())
+	case "run:start", "run:stop", "run:fail", "run:cancel":
+		if event.Run() == nil {
+			return nil, false
+		}
+		return t.runEvent(event)
 	case "stream:data":
 		if t.onChunk == nil {
-			return false
+			return nil, false
 		}
 		text, ok := chunkText(event)
 		if !ok {
-			return false
+			return nil, false
 		}
 		runID, _ := event["run_id"].(string)
-		if t.runs[runID] {
+		if _, tied := t.runs[runID]; tied {
 			t.onChunk(text)
 		} else if runID != "" && t.count < maxBufferedChunks {
 			t.buffered[runID] = append(t.buffered[runID], text)
 			t.count++
 		}
-	case "run:stop", "run:fail", "run:cancel":
-		run := event.Run()
-		if !t.correlate(run) {
-			// Another event's run finished; its chunks will never be needed.
-			if runID, _ := run["run_id"].(string); runID != "" {
-				t.count -= len(t.buffered[runID])
-				delete(t.buffered, runID)
-			}
-			return false
-		}
-		status, _ := run["status"].(string)
-		return event.Type() != "run:fail" || status != "pending_retry"
 	}
-	return false
+	return nil, false
+}
+
+// holdUntil is when the held failure stands, or zero when none is held.
+func (t *runTracker) holdUntil() time.Time {
+	if t.held == nil {
+		return time.Time{}
+	}
+	return t.held.until
+}
+
+// expire returns the held failure, which no retry run followed in time.
+func (t *runTracker) expire() (StreamEvent, bool) {
+	if t.held == nil {
+		return nil, false
+	}
+	event := t.held.event
+	t.held = nil
+	return event, true
+}
+
+// ties reports whether run belongs to the published event, by event id or
+// through its origin run.
+func (t *runTracker) ties(run map[string]any) bool {
+	if t.eventID != "" && eventIDOfRun(run) == t.eventID {
+		return true
+	}
+	_, tied := t.runs[originOf(run)]
+	return tied
+}
+
+func (t *runTracker) runEvent(event StreamEvent) (StreamEvent, bool) {
+	run := event.Run()
+	runID, _ := run["run_id"].(string)
+	if runID == "" {
+		return nil, false
+	}
+	if !t.ties(run) {
+		if origin := originOf(run); origin != "" {
+			t.orphans[origin] = append(t.orphans[origin], event)
+		} else if event.Type() != "run:start" {
+			// Another event's run finished; its chunks will never be needed.
+			t.count -= len(t.buffered[runID])
+			delete(t.buffered, runID)
+		}
+		return nil, false
+	}
+	attempt := retryAttempt(run)
+	var released []StreamEvent
+	if seen, tied := t.runs[runID]; tied {
+		t.runs[runID] = max(seen, attempt)
+	} else {
+		t.runs[runID] = attempt
+		for _, text := range t.buffered[runID] {
+			t.onChunk(text)
+		}
+		t.count -= len(t.buffered[runID])
+		delete(t.buffered, runID)
+		released = t.orphans[runID]
+		delete(t.orphans, runID)
+		if len(released) > 0 {
+			// A retry of this run is already on the stream.
+			t.retried[runID] = true
+		}
+	}
+	if origin := originOf(run); origin != "" {
+		t.retried[origin] = true
+		if t.held != nil && t.held.runID == origin {
+			t.held = nil
+		}
+	}
+	if final, ok := t.outcome(event, runID, run); ok {
+		return final, true
+	}
+	for _, orphan := range released {
+		if final, ok := t.runEvent(orphan); ok {
+			return final, true
+		}
+	}
+	return nil, false
+}
+
+// outcome decides whether an event of a tied run settles the wait.
+func (t *runTracker) outcome(event StreamEvent, runID string, run map[string]any) (StreamEvent, bool) {
+	if status, _ := run["status"].(string); status == "pending_retry" {
+		return nil, false
+	}
+	switch event.Type() {
+	case "run:stop", "run:cancel":
+		return event, true
+	case "run:fail":
+		if t.retried[runID] {
+			return nil, false
+		}
+		// retry_attempt goes up when a retry is scheduled; a run's own
+		// attempt number is its origin's (0 for the first attempt).
+		base := 0
+		if origin := originOf(run); origin != "" {
+			base = t.runs[origin]
+		}
+		if retryAttempt(run) > base {
+			if t.held == nil {
+				t.held = &heldFailure{runID: runID, event: event, until: time.Now().Add(retryGrace)}
+			}
+			return nil, false
+		}
+		return event, true
+	}
+	return nil, false
+}
+
+func originOf(run map[string]any) string {
+	origin, _ := run["origin_run_id"].(string)
+	return origin
+}
+
+func retryAttempt(run map[string]any) int {
+	attempt, _ := run["retry_attempt"].(float64)
+	return int(attempt)
+}
+
+// graceWatch cancels the current connection when the tracker's held failure
+// is due, so a waiter blocked on a quiet stream can report it.
+type graceWatch struct {
+	cancel context.CancelCauseFunc
+	timer  *time.Timer
+}
+
+// sync starts or stops the timer to match the tracker's held failure.
+func (g *graceWatch) sync(t *runTracker) {
+	until := t.holdUntil()
+	switch {
+	case until.IsZero() && g.timer != nil:
+		g.timer.Stop()
+		g.timer = nil
+	case !until.IsZero() && g.timer == nil:
+		cancel := g.cancel
+		g.timer = time.AfterFunc(time.Until(until), func() { cancel(errRetryGrace) })
+	}
+}
+
+func (g *graceWatch) stop() {
+	if g.timer != nil {
+		g.timer.Stop()
+	}
 }
 
 // runOutcome turns a final run event into the waiter's result.
