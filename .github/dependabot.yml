@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # The module has no dependencies; this keeps go.mod's toolchain lines and
+  # any future dependency current.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Weekly, the org API isolation job builds hot main instead of the pinned
+  # revision, so API drift shows up before the next pin bump.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,8 +19,10 @@ jobs:
     name: Test (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        go: ["1.23.x", "1.24.x"]
+        # The go.mod minimum, plus the two Go releases the Go team supports.
+        go: ["1.23.x", "oldstable", "stable"]
 
     steps:
       - name: Checkout
@@ -54,7 +61,7 @@ jobs:
         run: ./integration/run.sh
 
   postgres-isolation:
-    name: PostgreSQL Sub-org Isolation
+    name: Org API isolation (PostgreSQL)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -70,15 +77,17 @@ jobs:
 
       # A released CLI may lag these API changes. Pin the tested server source
       # separately so its schema, runtime qualification, and OpenAPI agree.
+      # The weekly scheduled run tests hot main instead.
       - name: Checkout matching Hot server
         uses: actions/checkout@v5
         with:
           repository: hot-dev/hot
-          ref: d5dde712f447daf88c38e5546f805496c46a2877 # Keep aligned with integration/hot-server.ref
+          ref: ${{ github.event_name == 'schedule' && 'main' || 'd5dde712f447daf88c38e5546f805496c46a2877' }} # Keep the SHA aligned with integration/hot-server.ref
           path: .hot-server
           persist-credentials: false
 
       - name: Verify matching Hot revision
+        if: github.event_name != 'schedule'
         shell: bash
         run: |
           expected="$(cat integration/hot-server.ref)"
@@ -110,7 +119,7 @@ jobs:
           workspaces: .hot-server -> target
           key: postgres-isolation-${{ hashFiles('integration/hot-server.ref') }}
           cache-workspace-crates: "true"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'schedule' }}
 
       - name: Install Tailwind for the server build
         shell: bash
@@ -131,7 +140,7 @@ jobs:
         with:
           go-version: "1.23.x"
 
-      - name: Test PostgreSQL isolation with restricted runtime credentials
+      - name: Test org API isolation with restricted runtime credentials
         run: |
           python3 integration/suborg_fixture.py \
             --backend postgres \

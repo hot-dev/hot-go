@@ -24,6 +24,7 @@ type TaskWaitError struct {
 	Task map[string]any
 }
 
+// Error reports the task's failure message, or its status.
 func (e *TaskWaitError) Error() string {
 	if message := resultMessage(e.Task["result"]); message != "" {
 		return "hot: " + message

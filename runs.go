@@ -25,6 +25,7 @@ type RunWaitError struct {
 	Run map[string]any
 }
 
+// Error reports the run's failure message, or its status.
 func (e *RunWaitError) Error() string {
 	if message := resultMessage(e.Run["result"]); message != "" {
 		return "hot: " + message

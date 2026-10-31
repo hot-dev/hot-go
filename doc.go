@@ -23,6 +23,15 @@
 //		}
 //	}
 //
+// Durable waiters (Runs.Wait, Tasks.Wait, Streams.SubscribeWithEvent,
+// Streams.WaitForRunResult, Events.CallHot) reconnect across the API's
+// 5-minute subscription limit and transient failures, and stop at once on
+// permanent errors such as 401, 403 and 404; see RunsResource.Wait.
+//
+// Client.Orgs and Client.APIKeys form the org API and need an org API key;
+// every other resource needs an environment API key, session or service key.
+// The wrong kind of key returns a *KeyScopeError.
+//
 // Authenticated clients should run server-side; browser or untrusted clients
 // should call your own backend instead of embedding a Hot API key.
 package hot

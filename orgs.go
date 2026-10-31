@@ -7,9 +7,10 @@ import (
 
 // OrgsResource manages child organizations, their environments and their API
 // keys through the org API (/v1/orgs). It needs a Client configured with an
-// org API key, which a root administrator creates in the Hot App; any other
-// credential gets a *KeyScopeError with RequiredScope "org". Org API keys in
-// turn cannot call runtime resources such as Events or Streams.
+// org API key, which a root administrator creates on the organization's
+// Children tab in the Hot App; any other credential gets a *KeyScopeError
+// with RequiredScope "org". Org API keys in turn cannot call runtime
+// resources such as Events or Streams.
 //
 // Mint an environment key with CreateEnvAPIKey and give it to a separate
 // Client for runtime calls in that environment.

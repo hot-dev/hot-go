@@ -23,6 +23,7 @@ type APIError struct {
 	ErrorBody map[string]any
 }
 
+// Error reports the message and status code.
 func (e *APIError) Error() string {
 	return fmt.Sprintf("hot: %s (status %d)", e.Message, e.StatusCode)
 }
@@ -89,6 +90,7 @@ type KeyScopeError struct {
 	RequiredScope string
 }
 
+// Error reports which kind of key the call needs.
 func (e *KeyScopeError) Error() string {
 	if e.RequiredScope == "org" {
 		return "hot: this call needs an org API key; environment API keys, sessions and service keys only call runtime routes (status 403, key_scope_mismatch)"

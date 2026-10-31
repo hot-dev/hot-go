@@ -25,15 +25,24 @@ go run ./internal/update-openapi   # refresh testdata/openapi-operations.json fr
 ## Layout
 
 - `client.go` / `transport.go` — Config, Client, JSON + raw + SSE transport
-- `streams.go` — SubscribeWithEvent reconnect loop, WaitForRunResult
-- one file per resource (12 resources, mirroring hot-python's resources.py)
+  (429 and idempotent 5xx retries, the 45 s stream idle timeout)
+- `reconnect.go` — the shared waiter reconnect policy (permanent 4xx stop,
+  jittered backoff, consecutive-failure budget, deadlines) and the run
+  tracker (pending_retry follow-up, early stream:data buffering)
+- `streams.go` — SubscribeWithEvent, WaitForRunResult, CallHot's wait
+- `orgs.go` — the org API (`Orgs`, `Orgs.Env`, `APIKeys`), org API keys only
+- one file per resource (mirroring hot-python's resources.py)
 - `openapi_coverage_test.go` — every OpenAPI operation must map to an SDK
   method or carry an explicit ignore; fixture lives in `testdata/`
 
 ## CI and Releases
 
 - CI runs on pushes and pull requests to `main`: gofmt, vet, `go test -race`
-  on the two most recent Go versions.
+  on Go 1.23 (the go.mod minimum), oldstable and stable; the `hot dev`
+  integration suite against the released CLI; and the org API isolation job,
+  which builds hot at `integration/hot-server.ref` and runs the PostgreSQL
+  sub-org fixture. A weekly scheduled run builds hot `main` instead, to catch
+  API drift. Dependabot watches gomod and GitHub Actions.
 - There is no registry: publishing is pushing a `v<version>` tag to the public
   repo. proxy.golang.org and pkg.go.dev index it from there. The release
   workflow runs the tests and warms the module proxy.
@@ -65,7 +74,14 @@ function, and hot:call targets). It binds 127.0.0.1 on HOT_TEST_PORT (default
 4721), mints a full-access API key directly in the fixture's sqlite database,
 exports HOT_TEST_BASE_URL / HOT_TEST_API_KEY, and runs `go test -run Integration`.
 The integration tests skip when HOT_TEST_API_KEY is unset, so regular test
-runs are unaffected. The fixture pins the API to 127.0.0.1 because binding
+runs are unaffected. The fixture project also has a retrying handler
+(`sdk:flaky`) and a streaming function (`::fixture::sdk/stream-chunks`).
+
+`integration/suborg_fixture.py` runs the `TestSuborg*` tests against a
+disposable server built from `integration/hot-server.ref` (SQLite by default,
+`--backend postgres` for restricted-role PostgreSQL). When the API changes,
+bump the SHA there and in ci.yml together, regenerate the OpenAPI fixture,
+and reconcile `openapi_coverage_test.go`. The fixture pins the API to 127.0.0.1 because binding
 "localhost" can yield an IPv6-only listener that JDK-style clients (which
 dial the first resolved address only) cannot reach.
 
