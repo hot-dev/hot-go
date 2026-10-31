@@ -164,7 +164,9 @@ func jsonRetryDelay(method string, status int, err error, attempt int) (time.Dur
 		return 0, false
 	}
 	var apiErr *APIError
-	errors.As(err, &apiErr)
+	if !errors.As(err, &apiErr) {
+		return 0, false
+	}
 	retryAfter := time.Duration(min(apiErr.RetryAfter, maxRetryAfterSeconds)) * time.Second
 	switch status {
 	case http.StatusTooManyRequests:

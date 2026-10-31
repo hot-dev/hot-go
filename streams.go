@@ -174,6 +174,9 @@ func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[strin
 }
 
 func waitForRunResult(ctx context.Context, t *transport, streamID, eventID string, opts *WaitForRunResultOptions) (map[string]any, error) {
+	if streamID == "" || eventID == "" {
+		return nil, errors.New("hot: WaitForRunResult needs the published event's stream_id and event_id")
+	}
 	return waitForPublishedRun(ctx, t, streamID, eventID, nil, opts)
 }
 
