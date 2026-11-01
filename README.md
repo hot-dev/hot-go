@@ -178,7 +178,7 @@ waiter policy above.
 - `client.ServiceKeys` — create and revoke scoped service keys
 - `client.Org` — view this environment's usage against the account's limits
 - `client.Env` — read environment info, subscribe to environment events, and purge call traces
-- `client.Orgs` — with an org API key: provision child organizations and environments, mint org and environment API keys, read account usage, purge call traces, and manage projects, builds and context in an environment with `client.Orgs.Env(orgID, envID)`
+- `client.Orgs` — with an org API key: provision sub-organizations and environments, mint org and environment API keys, read account usage, purge call traces, and manage projects, builds and context in an environment with `client.Orgs.Env(orgID, envID)`
 - `client.APIKeys` — with an org API key: read, narrow, revoke and rotate API keys by ID
 
 Use `client.Request(...)` or `client.RequestRaw(...)` as an escape hatch for
@@ -243,8 +243,8 @@ Apache-2.0
 
 Requires Hot 3.0.1 or later. An **org API key** belongs to a root
 organization and calls only the org API: `client.Orgs` and `client.APIKeys`.
-A root administrator creates the first one on the organization's
-**Children** tab in the Hot App. Runtime resources
+An administrator of the parent organization creates the first one on its
+**Sub-orgs** tab in the Hot App. Runtime resources
 (events, streams, runs, projects, ...) need an **environment API key**,
 session or service key instead, and each kind gets a `*hot.KeyScopeError` on
 the other's routes. Mint environment keys with the org key and use a separate
@@ -255,22 +255,22 @@ orgs, err := hot.NewClient(hot.Config{Token: os.Getenv("HOT_ORG_API_KEY")})
 if err != nil {
 	log.Fatal(err)
 }
-child, err := orgs.Orgs.Create(ctx, map[string]any{
+subOrg, err := orgs.Orgs.Create(ctx, map[string]any{
 	"name": "Customer", "slug": "customer-123",
 	"external_id": "customer-123", "idempotency_key": "customer-123",
 })
 if err != nil {
 	log.Fatal(err)
 }
-orgID := child["org"].(map[string]any)["org_id"].(string)
-envID := child["env_id"].(string) // the child's default environment
+orgID := subOrg["org"].(map[string]any)["org_id"].(string)
+envID := subOrg["env_id"].(string) // the sub-organization's default environment
 
-// Deploy-side work in the child, with the org key's grants for that environment.
+// Deploy-side work in the sub-organization, with the org key's grants for that environment.
 if _, err := orgs.Orgs.Env(orgID, envID).Projects.Create(ctx, map[string]any{"name": "backend"}); err != nil {
 	log.Fatal(err)
 }
 
-// Runtime work in the child, with an environment key.
+// Runtime work in the sub-organization, with an environment key.
 key, err := orgs.Orgs.CreateEnvAPIKey(ctx, orgID, envID, map[string]any{
 	"description": "Customer backend",
 	"permissions": map[string]any{"event:*": []string{"create"}, "run:*": []string{"read"}},
@@ -290,7 +290,7 @@ _, err = customer.Events.Publish(ctx, map[string]any{"event_type": "customer:sig
 | `Orgs.List(ctx, query)` | `GET /v1/orgs` (list envelope; `limit`, `offset`) |
 | `Orgs.Create(ctx, body)` | `POST /v1/orgs` → `{org, env_id, created}` |
 | `Orgs.Get(ctx, orgID)` / `Orgs.Update(ctx, orgID, {"state": ...})` | `GET`/`PATCH /v1/orgs/{org_id}` |
-| `Orgs.Usage(ctx, rootOrgID)` | `GET /v1/orgs/{org_id}/usage` (account usage; root org only) |
+| `Orgs.Usage(ctx, parentOrgID)` | `GET /v1/orgs/{org_id}/usage` (account usage; parent organization only) |
 | `Orgs.PurgeCalls(ctx, orgID, includeSubOrgs)` | `DELETE /v1/orgs/{org_id}/calls` |
 | `Orgs.ListEnvs` / `CreateEnv` / `GetEnv` | `/v1/orgs/{org_id}/envs[/{env_id}]` |
 | `Orgs.ListAPIKeys` / `CreateAPIKey` | `/v1/orgs/{org_id}/api-keys` (org keys) |
@@ -298,8 +298,8 @@ _, err = customer.Events.Publish(ctx, map[string]any{"event_type": "customer:sig
 | `Orgs.Env(orgID, envID).Projects` / `.Builds` / `.Context` | `/v1/orgs/{org_id}/envs/{env_id}/projects/...`, `/builds` |
 | `APIKeys.Get` / `Update` / `Revoke` / `Rotate` | `/v1/api-keys/{key_id}[/rotate]` |
 
-Child creation needs a stable `idempotency_key`: a retry with the same key
-returns the same child with `created: false`. Slugs are at most 32
+Sub-organization creation needs a stable `idempotency_key`: a retry with the same key
+returns the same sub-organization with `created: false`. Slugs are at most 32
 characters. Environment creation is idempotent by exact name. Minted keys
 must fit inside the org key's own grants, and their `token` is returned only
 once (also by `Rotate`, whose `overlap_seconds` keeps the previous secret
@@ -336,4 +336,4 @@ org/runtime key separation (`*hot.KeyScopeError` both ways), account and
 environment usage, org-scoped projects and context, restricted environment
 keys, service key and session issuance and revocation, key narrowing,
 rotation and revocation, issuer revocation and narrowing for existing
-descendants, and child suspension and resumption.
+descendants, and sub-organization suspension and resumption.
