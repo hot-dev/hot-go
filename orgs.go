@@ -5,10 +5,10 @@ import (
 	"net/url"
 )
 
-// OrgsResource manages child organizations, their environments and their API
+// OrgsResource manages sub-organizations, their environments and their API
 // keys through the org API (/v1/orgs). It needs a Client configured with an
-// org API key, which a root administrator creates on the organization's
-// Children tab in the Hot App; any other credential gets a *KeyScopeError
+// org API key, which an administrator of the parent organization creates on its
+// Sub-orgs tab in the Hot App; any other credential gets a *KeyScopeError
 // with RequiredScope "org". Org API keys in turn cannot call runtime
 // resources such as Events or Streams.
 //
@@ -16,16 +16,16 @@ import (
 // Client for runtime calls in that environment.
 type OrgsResource struct{ transport *transport }
 
-// List returns the list envelope (data + pagination) of the children the key
+// List returns the list envelope (data + pagination) of the sub-organizations the key
 // may read. query accepts limit and offset.
 func (r *OrgsResource) List(ctx context.Context, query url.Values) (map[string]any, error) {
 	return r.transport.requestJSON(ctx, "GET", "/orgs", nil, query)
 }
 
-// Create provisions a child organization with a default environment and
+// Create provisions a sub-organization with a default environment and
 // returns {org, env_id, created}. body needs name, slug (32 characters or
 // fewer) and idempotency_key, and accepts external_id. Reuse the same
-// idempotency_key to retry: a replay returns the same child with created
+// idempotency_key to retry: a replay returns the same sub-organization with created
 // false.
 func (r *OrgsResource) Create(ctx context.Context, body map[string]any) (map[string]any, error) {
 	envelope, err := r.transport.requestJSON(ctx, "POST", "/orgs", body, nil)
@@ -35,7 +35,7 @@ func (r *OrgsResource) Create(ctx context.Context, body map[string]any) (map[str
 	return dataObject(envelope), nil
 }
 
-// Get returns an organization: the key's own root or one of its children.
+// Get returns an organization: the key's own organization or one of its sub-organizations.
 func (r *OrgsResource) Get(ctx context.Context, orgID string) (map[string]any, error) {
 	envelope, err := r.transport.requestJSON(ctx, "GET", "/orgs/"+enc(orgID), nil, nil)
 	if err != nil {
@@ -44,7 +44,7 @@ func (r *OrgsResource) Get(ctx context.Context, orgID string) (map[string]any, e
 	return dataObject(envelope), nil
 }
 
-// Update changes a child's lifecycle state and returns the organization.
+// Update changes a sub-organization's lifecycle state and returns the organization.
 // body is {"state": "active" | "suspended" | "archived"}.
 func (r *OrgsResource) Update(ctx context.Context, orgID string, body map[string]any) (map[string]any, error) {
 	envelope, err := r.transport.requestJSON(ctx, "PATCH", "/orgs/"+enc(orgID), body, nil)
@@ -55,9 +55,9 @@ func (r *OrgsResource) Update(ctx context.Context, orgID string, body map[string
 }
 
 // Usage returns account usage for the current billing period, across the
-// root and every child. rootOrgID must be the key's own (root) organization.
-func (r *OrgsResource) Usage(ctx context.Context, rootOrgID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/orgs/"+enc(rootOrgID)+"/usage", nil, nil)
+// parent organization and every sub-organization. parentOrgID must be the key's own organization.
+func (r *OrgsResource) Usage(ctx context.Context, parentOrgID string) (map[string]any, error) {
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/orgs/"+enc(parentOrgID)+"/usage", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func (r *OrgsResource) Usage(ctx context.Context, rootOrgID string) (map[string]
 }
 
 // PurgeCalls deletes every call trace in the organization's environments, and
-// in its children's when includeSubOrgs is set, and returns the purge outcome
+// in its sub-organizations' when includeSubOrgs is set, and returns the purge outcome
 // (calls_deleted, blob_refs_released, complete).
 func (r *OrgsResource) PurgeCalls(ctx context.Context, orgID string, includeSubOrgs bool) (map[string]any, error) {
 	var query url.Values
@@ -142,7 +142,7 @@ func (r *OrgsResource) CreateEnvAPIKey(ctx context.Context, orgID, envID string,
 // Env addresses one environment of an organization through the org API. Its
 // resources call /v1/orgs/{org_id}/envs/{env_id}/... with the org key's
 // grants for that environment, so an org key can manage projects, builds and
-// context in a child without minting an environment key first.
+// context in a sub-organization without minting an environment key first.
 func (r *OrgsResource) Env(orgID, envID string) *OrgEnv {
 	t := r.transport.scoped("/orgs/" + enc(orgID) + "/envs/" + enc(envID))
 	return &OrgEnv{
@@ -163,7 +163,7 @@ type OrgEnv struct {
 
 // APIKeysResource reads, narrows, revokes and rotates API keys by ID through
 // the org API. It needs an org API key; the target may be an org key or an
-// environment key in the key's organization or one of its children.
+// environment key in the key's organization or one of its sub-organizations.
 // Narrowing, revoking and rotating also require that the caller issued the
 // target, directly or through keys it issued.
 type APIKeysResource struct{ transport *transport }
