@@ -24,7 +24,11 @@ func (r *ProjectsResource) Create(ctx context.Context, body map[string]any) (map
 
 // Get returns a project by id or slug.
 func (r *ProjectsResource) Get(ctx context.Context, project string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/projects/"+enc(project), nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/projects/"+projectSeg, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +37,11 @@ func (r *ProjectsResource) Get(ctx context.Context, project string) (map[string]
 
 // Update patches a project.
 func (r *ProjectsResource) Update(ctx context.Context, project string, body map[string]any) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "PATCH", "/projects/"+enc(project), body, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "PATCH", "/projects/"+projectSeg, body, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -42,12 +50,20 @@ func (r *ProjectsResource) Update(ctx context.Context, project string, body map[
 
 // Delete deletes a project.
 func (r *ProjectsResource) Delete(ctx context.Context, project string) error {
-	return r.transport.delete(ctx, "/projects/"+enc(project), nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return err
+	}
+	return r.transport.delete(ctx, "/projects/"+projectSeg, nil)
 }
 
 // Activate activates a project.
 func (r *ProjectsResource) Activate(ctx context.Context, project string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "POST", "/projects/"+enc(project)+"/activate", nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "POST", "/projects/"+projectSeg+"/activate", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +72,11 @@ func (r *ProjectsResource) Activate(ctx context.Context, project string) (map[st
 
 // Deactivate deactivates a project.
 func (r *ProjectsResource) Deactivate(ctx context.Context, project string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "POST", "/projects/"+enc(project)+"/deactivate", nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "POST", "/projects/"+projectSeg+"/deactivate", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -65,10 +85,18 @@ func (r *ProjectsResource) Deactivate(ctx context.Context, project string) (map[
 
 // EventHandlers returns the project's event handlers.
 func (r *ProjectsResource) EventHandlers(ctx context.Context, project string) (map[string]any, error) {
-	return r.transport.requestJSON(ctx, "GET", "/projects/"+enc(project)+"/event-handlers", nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	return r.transport.requestJSON(ctx, "GET", "/projects/"+projectSeg+"/event-handlers", nil, nil)
 }
 
 // Schedules returns the project's schedules.
 func (r *ProjectsResource) Schedules(ctx context.Context, project string) (map[string]any, error) {
-	return r.transport.requestJSON(ctx, "GET", "/projects/"+enc(project)+"/schedules", nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	return r.transport.requestJSON(ctx, "GET", "/projects/"+projectSeg+"/schedules", nil, nil)
 }

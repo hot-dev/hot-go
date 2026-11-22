@@ -8,14 +8,36 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Validate and index release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Verify tag matches Version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(sed -n 's/^const Version = "\(.*\)"$/\1/p' client.go)"
+          if [ -z "$version" ]; then
+            echo "Could not extract Version from client.go" >&2
+            exit 1
+          fi
+          expected="v${version}"
+          if [ "$REF_NAME" != "$expected" ]; then
+            echo "Tag ${REF_NAME} does not match client.go Version (${expected})" >&2
+            exit 1
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -36,7 +58,8 @@ jobs:
       - name: Warm module proxy
         env:
           GOPROXY: https://proxy.golang.org
+          REF_NAME: ${{ github.ref_name }}
         run: |
           cd "$(mktemp -d)"
           go mod init warmup
-          go list -m github.com/hot-dev/hot-go@${{ github.ref_name }}
+          go list -m "github.com/hot-dev/hot-go@${REF_NAME}"

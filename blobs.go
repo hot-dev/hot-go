@@ -15,5 +15,9 @@ type BlobsResource struct{ transport *transport }
 // caller's environment. The caller must close the response body. String
 // payloads are served as UTF-8 text.
 func (r *BlobsResource) Download(ctx context.Context, blobRefID string) (*http.Response, error) {
-	return r.transport.requestRaw(ctx, "GET", "/blobs/"+enc(blobRefID)+"/download", nil, nil, nil)
+	blobSeg, err := encSegment("blob_ref_id", blobRefID)
+	if err != nil {
+		return nil, err
+	}
+	return r.transport.requestRaw(ctx, "GET", "/blobs/"+blobSeg+"/download", nil, nil, nil)
 }

@@ -3,11 +3,49 @@ package hot
 import (
 	"context"
 	"errors"
-	"fmt"
 	"iter"
 	"net/url"
 	"time"
 )
+
+// maxSeenRunIDs caps the per-stream run deduplication sets in
+// SubscribeWithEvent so long shared streams cannot grow memory without bound.
+var maxSeenRunIDs = 4096
+
+type boundedSet struct {
+	limit int
+	items map[string]struct{}
+	ring  []string
+	next  int
+}
+
+func newBoundedSet(limit int) *boundedSet {
+	return &boundedSet{
+		limit: limit,
+		items: make(map[string]struct{}),
+	}
+}
+
+func (s *boundedSet) has(key string) bool {
+	_, ok := s.items[key]
+	return ok
+}
+
+func (s *boundedSet) add(key string) {
+	if _, ok := s.items[key]; ok {
+		return
+	}
+	if s.limit > 0 {
+		if len(s.ring) < s.limit {
+			s.ring = append(s.ring, key)
+		} else {
+			delete(s.items, s.ring[s.next])
+			s.ring[s.next] = key
+			s.next = (s.next + 1) % s.limit
+		}
+	}
+	s.items[key] = struct{}{}
+}
 
 // StreamsResource subscribes to Hot run streams.
 type StreamsResource struct{ transport *transport }
@@ -25,35 +63,51 @@ type SubscribeWithEventOptions struct {
 	// DisableReconnect turns off automatic resubscription across the API's
 	// 5-minute subscription limit and transient failures.
 	DisableReconnect bool
-	// MaxAttempts caps consecutive failed connections. Defaults to 5.
+	// MaxAttempts caps consecutive reconnect attempts after failures (so a
+	// stream makes up to MaxAttempts + 1 consecutive failing connections).
+	// Defaults to 5.
 	MaxAttempts int
 }
 
 // WaitForRunResultOptions carries optional parameters for WaitForRunResult.
 type WaitForRunResultOptions struct {
 	// Timeout bounds the whole wait, reconnects included. Defaults to 60
-	// seconds.
+	// seconds when <= 0.
 	Timeout time.Duration
 	// OnChunk receives streamed text chunks from the matched run.
 	OnChunk func(text string)
-	// MaxAttempts caps consecutive failed connections. Defaults to 5.
+	// MaxAttempts caps consecutive reconnect attempts after failures (so a
+	// waiter makes up to MaxAttempts + 1 consecutive failing connections).
+	// Defaults to 5.
 	MaxAttempts int
 }
 
 // Subscribe streams events from an existing run stream.
 func (r *StreamsResource) Subscribe(ctx context.Context, streamID string, opts *StreamOptions) iter.Seq2[StreamEvent, error] {
-	return r.transport.stream(ctx, "GET", "/streams/"+enc(streamID)+"/subscribe", nil, streamQuery(opts))
+	streamSeg, err := encSegment("stream_id", streamID)
+	if err != nil {
+		return errorStream(err)
+	}
+	return r.transport.stream(ctx, "GET", "/streams/"+streamSeg+"/subscribe", nil, streamQuery(opts))
 }
 
 // SubscribePost streams events from an existing run stream via POST.
 func (r *StreamsResource) SubscribePost(ctx context.Context, streamID string, opts *StreamOptions) iter.Seq2[StreamEvent, error] {
-	return r.transport.stream(ctx, "POST", "/streams/"+enc(streamID)+"/subscribe", nil, streamQuery(opts))
+	streamSeg, err := encSegment("stream_id", streamID)
+	if err != nil {
+		return errorStream(err)
+	}
+	return r.transport.stream(ctx, "POST", "/streams/"+streamSeg+"/subscribe", nil, streamQuery(opts))
 }
 
 // PurgeCalls deletes the call traces of every run on the stream and returns
 // the purge outcome (calls_deleted, blob_refs_released, complete).
 func (r *StreamsResource) PurgeCalls(ctx context.Context, streamID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "DELETE", "/streams/"+enc(streamID)+"/calls", nil, nil)
+	streamSeg, err := encSegment("stream_id", streamID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "DELETE", "/streams/"+streamSeg+"/calls", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -80,28 +134,25 @@ func (r *StreamsResource) WaitForRunResult(ctx context.Context, streamID, eventI
 // keeps yielding events until the final run:stop/run:fail/run:cancel of the
 // published event's run. A run event with status pending_retry is not
 // final: iteration continues through the retry run, which links back by
-// origin_run_id. A run:fail whose retry_attempt shows a scheduled retry ends
-// the iteration only if no retry run appears within 5 seconds. Replayed
-// run:start and terminal events are deduped by run_id; stream:data chunks
-// are not replayed and may be lost across a reconnect. Reconnects follow the
-// policy described on Runs.Wait.
+// origin_run_id or top-level retry_run_id. A run:fail whose retry_attempt
+// shows a scheduled retry ends the iteration only if no retry run appears
+// within 5 seconds. Replayed run:start and final terminal events are deduped
+// by run_id; stream:data chunks are not replayed and may be lost across a
+// reconnect. Reconnects follow the policy described on Runs.Wait.
 func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[string]any, opts *SubscribeWithEventOptions) iter.Seq2[StreamEvent, error] {
 	options := SubscribeWithEventOptions{}
 	if opts != nil {
 		options = *opts
 	}
 	query := projectQuery(options.Project)
-	once := func() iter.Seq2[StreamEvent, error] {
+
+	if options.DisableReconnect {
 		return r.transport.stream(ctx, "POST", "/streams/subscribe-with-event", body, query)
 	}
 
-	if options.DisableReconnect {
-		return once()
-	}
-
 	return func(yield func(StreamEvent, error) bool) {
-		seenStart := map[string]bool{}
-		seenTerminal := map[string]bool{}
+		seenStart := newBoundedSet(maxSeenRunIDs)
+		seenTerminal := newBoundedSet(maxSeenRunIDs)
 		streamID := ""
 		tracker := newRunTracker("", nil)
 		reconnect := newReconnector("stream", options.MaxAttempts)
@@ -128,27 +179,29 @@ func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[strin
 
 				switch event.Type() {
 				case "event:published":
-					if published, ok := event["stream_id"].(string); ok {
+					if published, ok := event["stream_id"].(string); ok && published != "" {
 						streamID = published
 					}
-					if published, ok := event["event_id"].(string); ok {
+					if published, ok := event["event_id"].(string); ok && published != "" {
 						tracker.eventID = published
 					}
 				case "stream:complete":
 					conn.complete = true
 				case "run:start":
 					if runID := event.RunID(); runID != "" {
-						if seenStart[runID] {
+						if seenStart.has(runID) {
 							continue
 						}
-						seenStart[runID] = true
+						seenStart.add(runID)
 					}
 				case "run:stop", "run:fail", "run:cancel":
 					if runID := event.RunID(); runID != "" {
-						if seenTerminal[runID] {
+						if seenTerminal.has(runID) {
 							continue
 						}
-						seenTerminal[runID] = true
+						if event.RunStatus() != "pending_retry" {
+							seenTerminal.add(runID)
+						}
 					}
 				}
 				_, final := tracker.handle(event)
@@ -167,7 +220,7 @@ func (r *StreamsResource) SubscribeWithEvent(ctx context.Context, body map[strin
 			}
 			// A held failure that no retry followed in time ends the
 			// iteration; its run:fail was already yielded.
-			if tracker.held != nil && (graceEnded || !time.Now().Before(tracker.holdUntil())) {
+			if tracker.held != nil && ctx.Err() == nil && (graceEnded || !time.Now().Before(tracker.holdUntil())) {
 				return
 			}
 			if graceEnded && ctx.Err() == nil {
@@ -200,6 +253,9 @@ func waitForRunResult(ctx context.Context, t *transport, streamID, eventID strin
 	if streamID == "" || eventID == "" {
 		return nil, errors.New("hot: WaitForRunResult needs the published event's stream_id and event_id")
 	}
+	if _, err := encSegment("stream_id", streamID); err != nil {
+		return nil, err
+	}
 	return waitForPublishedRun(ctx, t, streamID, eventID, nil, opts)
 }
 
@@ -219,7 +275,7 @@ func waitForPublishedRun(ctx context.Context, t *transport, streamID, eventID st
 	if opts != nil {
 		options = *opts
 	}
-	if options.Timeout == 0 {
+	if options.Timeout <= 0 {
 		options.Timeout = 60 * time.Second
 	}
 	ctx, cancel := withWaitTimeout(ctx, options.Timeout)
@@ -235,7 +291,13 @@ func waitForPublishedRun(ctx context.Context, t *transport, streamID, eventID st
 		if streamID == "" {
 			source = t.stream(connCtx, "POST", "/streams/subscribe-with-event", publish, nil)
 		} else {
-			source = t.stream(connCtx, "GET", "/streams/"+enc(streamID)+"/subscribe", nil, nil)
+			streamSeg, err := encSegment("stream_id", streamID)
+			if err != nil {
+				grace.stop()
+				cancelConn(nil)
+				return nil, err
+			}
+			source = t.stream(connCtx, "GET", "/streams/"+streamSeg+"/subscribe", nil, nil)
 		}
 		var conn connection
 		var final StreamEvent
@@ -248,8 +310,12 @@ func waitForPublishedRun(ctx context.Context, t *transport, streamID, eventID st
 			switch event.Type() {
 			case "event:published":
 				if publish != nil {
-					streamID, _ = event["stream_id"].(string)
-					tracker.eventID, _ = event["event_id"].(string)
+					if published, ok := event["stream_id"].(string); ok && published != "" {
+						streamID = published
+					}
+					if published, ok := event["event_id"].(string); ok && published != "" {
+						tracker.eventID = published
+					}
 				}
 			case "stream:complete":
 				conn.complete = true
@@ -267,8 +333,10 @@ func waitForPublishedRun(ctx context.Context, t *transport, streamID, eventID st
 			return runOutcome(final)
 		}
 		// A held failure stands when its grace ends without a retry run, and
-		// at the caller's deadline.
-		if tracker.held != nil && (graceEnded || ctx.Err() != nil || !time.Now().Before(tracker.holdUntil())) {
+		// at the caller's deadline — but not when the caller explicitly
+		// cancelled ctx.
+		deadlineExceeded := errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(context.Cause(ctx), errWaitTimeout)
+		if tracker.held != nil && (ctx.Err() == nil || deadlineExceeded) && (graceEnded || deadlineExceeded || !time.Now().Before(tracker.holdUntil())) {
 			held, _ := tracker.expire()
 			return runOutcome(held)
 		}
@@ -288,8 +356,10 @@ func waitForPublishedRun(ctx context.Context, t *transport, streamID, eventID st
 			}
 		}
 		if err := reconnect.next(ctx, conn, "hot: stream ended before run completed"); err != nil {
-			if held, ok := tracker.expire(); ok {
-				return runOutcome(held)
+			if !errors.Is(err, context.Canceled) && !isPermanentError(err) && (ctx.Err() == nil || deadlineExceeded) {
+				if held, ok := tracker.expire(); ok {
+					return runOutcome(held)
+				}
 			}
 			return nil, err
 		}
@@ -314,16 +384,6 @@ func resultMessage(value any) string {
 		}
 	}
 	return ""
-}
-
-func runResultMessage(run map[string]any, fallback string) string {
-	if message := resultMessage(run["result"]); message != "" {
-		return message
-	}
-	if status, _ := run["status"].(string); status != "" {
-		return fmt.Sprintf("%s (%s)", fallback, status)
-	}
-	return fallback
 }
 
 // extractRunResult unwraps a {"$ok": ...} run result.

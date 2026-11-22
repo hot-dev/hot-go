@@ -4,10 +4,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// nowFunc returns the current time; overridden in tests for deterministic
+// Retry-After HTTP-date parsing.
+var nowFunc = time.Now
 
 // APIError is the structured error returned for non-2xx Hot API responses.
 type APIError struct {
@@ -67,12 +73,25 @@ func parseAPIError(statusCode int, body []byte, headers http.Header) *APIError {
 }
 
 func retryAfterSeconds(value any, headers http.Header) int {
-	if seconds, ok := value.(float64); ok {
-		return int(seconds)
+	if seconds, ok := value.(float64); ok && !math.IsNaN(seconds) && !math.IsInf(seconds, 0) && seconds > 0 {
+		if seconds >= float64(math.MaxInt) {
+			return math.MaxInt
+		}
+		return int(math.Ceil(seconds))
 	}
-	if header := headers.Get("Retry-After"); header != "" {
+	if header := strings.TrimSpace(headers.Get("Retry-After")); header != "" {
 		if seconds, err := strconv.Atoi(header); err == nil {
+			if seconds <= 0 {
+				return 0
+			}
 			return seconds
+		}
+		if when, err := http.ParseTime(header); err == nil {
+			delta := when.Sub(nowFunc())
+			if delta <= 0 {
+				return 0
+			}
+			return int(math.Ceil(delta.Seconds()))
 		}
 	}
 	return 0
@@ -121,9 +140,13 @@ func apiError(path string, statusCode int, body []byte, headers http.Header) err
 }
 
 // isPermanentError reports whether err must end a durable wait instead of
-// reconnecting: any 4xx response except 408 and 429 (bad request,
-// authorization including key_scope_mismatch, not found, gone, ...).
+// reconnecting: invalid path errors, or any 4xx response except 408 and 429
+// (bad request, authorization including key_scope_mismatch, not found, gone, ...).
 func isPermanentError(err error) bool {
+	var pathErr *invalidPathError
+	if errors.As(err, &pathErr) {
+		return true
+	}
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		return false

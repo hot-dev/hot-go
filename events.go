@@ -12,12 +12,14 @@ type EventsResource struct{ transport *transport }
 // CallHotOptions carries optional parameters for CallHot.
 type CallHotOptions struct {
 	// Timeout bounds the whole wait for the run result, reconnects included.
-	// Defaults to 60 seconds.
+	// Defaults to 60 seconds when <= 0.
 	Timeout time.Duration
 	// OnChunk receives streamed text chunks from the run, in order, including
 	// chunks the API delivers before the run's run:start.
 	OnChunk func(text string)
-	// MaxAttempts caps consecutive failed connections. Defaults to 5.
+	// MaxAttempts caps consecutive reconnect attempts after failures (so a
+	// waiter makes up to MaxAttempts + 1 consecutive failing connections).
+	// Defaults to 5.
 	MaxAttempts int
 }
 
@@ -59,7 +61,11 @@ func (r *EventsResource) List(ctx context.Context, query url.Values) (map[string
 
 // Get returns a single event.
 func (r *EventsResource) Get(ctx context.Context, eventID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/events/"+enc(eventID), nil, nil)
+	eventSeg, err := encSegment("event_id", eventID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/events/"+eventSeg, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -68,5 +74,9 @@ func (r *EventsResource) Get(ctx context.Context, eventID string) (map[string]an
 
 // GetRuns returns the runs triggered by an event.
 func (r *EventsResource) GetRuns(ctx context.Context, eventID string) (map[string]any, error) {
-	return r.transport.requestJSON(ctx, "GET", "/events/"+enc(eventID)+"/runs", nil, nil)
+	eventSeg, err := encSegment("event_id", eventID)
+	if err != nil {
+		return nil, err
+	}
+	return r.transport.requestJSON(ctx, "GET", "/events/"+eventSeg+"/runs", nil, nil)
 }

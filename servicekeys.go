@@ -24,7 +24,11 @@ func (r *ServiceKeysResource) List(ctx context.Context, query url.Values) (map[s
 
 // Get returns a single service key.
 func (r *ServiceKeysResource) Get(ctx context.Context, serviceKeyID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/service-keys/"+enc(serviceKeyID), nil, nil)
+	keySeg, err := encSegment("service_key_id", serviceKeyID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/service-keys/"+keySeg, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +37,11 @@ func (r *ServiceKeysResource) Get(ctx context.Context, serviceKeyID string) (map
 
 // Update patches a service key.
 func (r *ServiceKeysResource) Update(ctx context.Context, serviceKeyID string, body map[string]any) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "PATCH", "/service-keys/"+enc(serviceKeyID), body, nil)
+	keySeg, err := encSegment("service_key_id", serviceKeyID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "PATCH", "/service-keys/"+keySeg, body, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +50,11 @@ func (r *ServiceKeysResource) Update(ctx context.Context, serviceKeyID string, b
 
 // Revoke revokes one service key.
 func (r *ServiceKeysResource) Revoke(ctx context.Context, serviceKeyID string) error {
-	return r.transport.delete(ctx, "/service-keys/"+enc(serviceKeyID), nil)
+	keySeg, err := encSegment("service_key_id", serviceKeyID)
+	if err != nil {
+		return err
+	}
+	return r.transport.delete(ctx, "/service-keys/"+keySeg, nil)
 }
 
 // RevokeAll revokes every service key.

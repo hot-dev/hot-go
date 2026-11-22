@@ -14,9 +14,11 @@ type RunsResource struct{ transport *transport }
 // WaitForRunOptions configures run waiting.
 type WaitForRunOptions struct {
 	// Timeout bounds the whole wait, reconnects included. Defaults to 60
-	// seconds.
+	// seconds when <= 0.
 	Timeout time.Duration
-	// MaxAttempts caps consecutive failed connections. Defaults to 5.
+	// MaxAttempts caps consecutive reconnect attempts after failures (so a
+	// waiter makes up to MaxAttempts + 1 consecutive failing connections).
+	// Defaults to 5.
 	MaxAttempts int
 }
 
@@ -49,7 +51,11 @@ func (r *RunsResource) Stats(ctx context.Context) (map[string]any, error) {
 
 // Get returns a single run.
 func (r *RunsResource) Get(ctx context.Context, runID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/runs/"+enc(runID), nil, nil)
+	runSeg, err := encSegment("run_id", runID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/runs/"+runSeg, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +64,11 @@ func (r *RunsResource) Get(ctx context.Context, runID string) (map[string]any, e
 
 // Subscribe yields durable run:update snapshots until the run is terminal.
 func (r *RunsResource) Subscribe(ctx context.Context, runID string) iter.Seq2[StreamEvent, error] {
-	return r.transport.stream(ctx, "GET", "/runs/"+enc(runID)+"/subscribe", nil, nil)
+	runSeg, err := encSegment("run_id", runID)
+	if err != nil {
+		return errorStream(err)
+	}
+	return r.transport.stream(ctx, "GET", "/runs/"+runSeg+"/subscribe", nil, nil)
 }
 
 // Wait returns a succeeded run snapshot. Failed and cancelled runs return a
@@ -68,14 +78,17 @@ func (r *RunsResource) Subscribe(ctx context.Context, runID string) iter.Seq2[St
 // transient failures (transport errors, 408, 429, 5xx) with jittered
 // exponential backoff that honours the server's retry_after. Other 4xx
 // responses, such as 401, 403 (including *KeyScopeError) and 404, end the
-// wait at once. MaxAttempts counts consecutive failed connections only. A
-// timeout wraps context.DeadlineExceeded; a cancelled ctx wraps its cause.
+// wait at once. MaxAttempts caps consecutive reconnect attempts after failures.
+// A timeout wraps context.DeadlineExceeded; a cancelled ctx wraps its cause.
 func (r *RunsResource) Wait(ctx context.Context, runID string, opts *WaitForRunOptions) (map[string]any, error) {
+	if _, err := encSegment("run_id", runID); err != nil {
+		return nil, err
+	}
 	options := WaitForRunOptions{}
 	if opts != nil {
 		options = *opts
 	}
-	if options.Timeout == 0 {
+	if options.Timeout <= 0 {
 		options.Timeout = 60 * time.Second
 	}
 	ctx, cancel := withWaitTimeout(ctx, options.Timeout)
@@ -113,7 +126,11 @@ func (r *RunsResource) Wait(ctx context.Context, runID string, opts *WaitForRunO
 // PurgeCalls deletes the run's call traces and returns the purge outcome
 // (calls_deleted, blob_refs_released, complete).
 func (r *RunsResource) PurgeCalls(ctx context.Context, runID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "DELETE", "/runs/"+enc(runID)+"/calls", nil, nil)
+	runSeg, err := encSegment("run_id", runID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "DELETE", "/runs/"+runSeg+"/calls", nil, nil)
 	if err != nil {
 		return nil, err
 	}

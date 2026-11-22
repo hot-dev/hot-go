@@ -13,9 +13,11 @@ type TasksResource struct{ transport *transport }
 // WaitForTaskOptions configures task waiting.
 type WaitForTaskOptions struct {
 	// Timeout bounds the whole wait, reconnects included. Defaults to 60
-	// seconds.
+	// seconds when <= 0.
 	Timeout time.Duration
-	// MaxAttempts caps consecutive failed connections. Defaults to 5.
+	// MaxAttempts caps consecutive reconnect attempts after failures (so a
+	// waiter makes up to MaxAttempts + 1 consecutive failing connections).
+	// Defaults to 5.
 	MaxAttempts int
 }
 
@@ -34,7 +36,11 @@ func (e *TaskWaitError) Error() string {
 
 // Get returns the latest durable task snapshot.
 func (r *TasksResource) Get(ctx context.Context, taskID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/tasks/"+enc(taskID), nil, nil)
+	taskSeg, err := encSegment("task_id", taskID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/tasks/"+taskSeg, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -43,18 +49,25 @@ func (r *TasksResource) Get(ctx context.Context, taskID string) (map[string]any,
 
 // Subscribe yields durable task:update snapshots until the task is terminal.
 func (r *TasksResource) Subscribe(ctx context.Context, taskID string) iter.Seq2[StreamEvent, error] {
-	return r.transport.stream(ctx, "GET", "/tasks/"+enc(taskID)+"/subscribe", nil, nil)
+	taskSeg, err := encSegment("task_id", taskID)
+	if err != nil {
+		return errorStream(err)
+	}
+	return r.transport.stream(ctx, "GET", "/tasks/"+taskSeg+"/subscribe", nil, nil)
 }
 
 // Wait returns a completed task snapshot. Non-success terminal states return
 // a *TaskWaitError containing the final durable snapshot. Reconnects,
 // timeouts and cancellation behave as for Runs.Wait.
 func (r *TasksResource) Wait(ctx context.Context, taskID string, opts *WaitForTaskOptions) (map[string]any, error) {
+	if _, err := encSegment("task_id", taskID); err != nil {
+		return nil, err
+	}
 	options := WaitForTaskOptions{}
 	if opts != nil {
 		options = *opts
 	}
-	if options.Timeout == 0 {
+	if options.Timeout <= 0 {
 		options.Timeout = 60 * time.Second
 	}
 	ctx, cancel := withWaitTimeout(ctx, options.Timeout)

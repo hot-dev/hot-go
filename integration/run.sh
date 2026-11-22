@@ -20,7 +20,7 @@ trap 'kill "$DEV_PID" 2>/dev/null || true' EXIT
 
 up=""
 for _ in $(seq 1 60); do
-  if curl -sf -m 2 "http://localhost:$PORT/status" > /dev/null 2>&1; then up=1; break; fi
+  if curl -sf -m 2 "http://127.0.0.1:$PORT/status" > /dev/null 2>&1; then up=1; break; fi
   kill -0 "$DEV_PID" 2>/dev/null || { echo "error: hot dev exited early:" >&2; tail -20 fixture/dev.out >&2; exit 1; }
   sleep 2
 done
@@ -33,4 +33,4 @@ export HOT_TEST_API_KEY
 
 echo "hot dev ready; running integration tests..."
 cd ..
-go test -v -run Integration .
+go test -v -race -count=1 -run Integration .

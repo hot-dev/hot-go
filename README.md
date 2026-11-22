@@ -102,26 +102,31 @@ several tasks, call `Tasks.Wait` for each one (for example in goroutines).
   most 5-10 s) and wait at least the server's `retry_after`.
 - Other 4xx responses end the wait at once: 401 and 403 (including
   `*hot.KeyScopeError`), 404, 410, 422 and the rest.
-- `MaxAttempts` (default 5) caps **consecutive** failed connections. A
-  connection that delivered events or ended with the server's `stream:complete`
-  resets the count, so a run can outlast any number of 5-minute windows.
-- `Timeout` (default 60 s) bounds the whole wait, reconnects and backoff
-  included. A timeout error wraps `context.DeadlineExceeded`; cancelling `ctx`
-  returns an error wrapping its cause, so `errors.Is(err, context.Canceled)`
-  works.
+- `MaxAttempts` (default 5) caps **consecutive** reconnect attempts after
+  failures (so a waiter makes up to `MaxAttempts + 1` consecutive failing
+  connections before returning the last error). A connection that delivered
+  events or ended with the server's `stream:complete` resets the failure count,
+  so a run can outlast any number of 5-minute windows. Repeated premature clean
+  EOFs without `stream:complete` back off and are also bounded by `MaxAttempts`.
+- `Timeout` (default 60 s) on `Runs.Wait`, `Tasks.Wait`,
+  `Streams.WaitForRunResult` and `Events.CallHot` bounds the whole wait,
+  reconnects and backoff included (for `Streams.SubscribeWithEvent`, pass a
+  context with a deadline via `context.WithTimeout`). A timeout error wraps
+  `context.DeadlineExceeded`; cancelling `ctx` returns an error wrapping its
+  cause, so `errors.Is(err, context.Canceled)` works.
 - A stream that sends nothing, not even the server's 15-second keepalive, for
   45 seconds counts as a dead connection and reconnects.
 - A run whose handler will retry it ends with `run:fail` and status
-  `pending_retry`. That is not final: the waiters follow the retry run, which
-  links back through `origin_run_id`. The API can also replay that first
-  attempt as `run:stop` with status `pending_retry`, or as `run:fail` with
-  status `failed` and a raised `retry_attempt` before the retry run exists.
-  The first is never final either; the second is held for up to 5 seconds
-  (or until the wait's timeout) and reported only if no retry run appears.
-  Failures of handlers without retries, and of last retries, are reported
-  at once. `OnChunk` receives every chunk of the
-  matched run in order, including chunks the API sends before `run:start`.
-  A final failure returns `*hot.RunWaitError` with the run.
+  `pending_retry` (and may include top-level `retry_run_id`). That is not final:
+  the waiters follow the retry run, which links back through `origin_run_id`
+  or `retry_run_id`. The API can also replay that first attempt as `run:stop`
+  with status `pending_retry`, or as `run:fail` with status `failed` and a
+  raised `retry_attempt` before the retry run exists. The first is never final
+  either; the second is held for up to 5 seconds (or until the wait's timeout)
+  and reported only if no retry run appears. Failures of handlers without
+  retries, and of last retries, are reported at once. `OnChunk` receives every
+  chunk of the matched run in order, including chunks the API sends before
+  `run:start`. A final failure returns `*hot.RunWaitError` with the run.
 
 `SubscribeWithEvent` sends its publishing request again only when the server
 cannot have published the event (a 429 or 503 response, or a connection that
@@ -154,17 +159,21 @@ if errors.As(err, &scopeErr) {
 ### Retries
 
 JSON requests, body-less `DELETE`s included, are retried automatically (at
-most twice) when the API responds 429 with a `retry_after`, and idempotent
-ones (`GET`, `PUT`, `DELETE`) also on 502, 503 and 504. Other errors are
-returned as-is. `Config.Timeout` bounds each JSON request. Uploads,
-downloads and other raw requests are never retried; streams follow the
-waiter policy above.
+most twice) when the API responds 429 with a `retry_after`, on 503
+`event_publish_in_progress` (for idempotent `POST` event publishes with a
+caller-supplied `event_id`), and for idempotent methods (`GET`, `PUT`,
+`DELETE`) on 502, 503 and 504. Other errors (including 409 `event_id_conflict`
+when a caller-supplied `event_id` is reused with a different payload) are
+returned as-is. `Config.Timeout` bounds each JSON request. Uploads, downloads
+and other raw requests are never retried; streams follow the waiter policy
+above.
 
 ## Resources
 
-`Client` mirrors the Hot API v1 resources:
+`Client` mirrors the Hot API resources:
 
-- `client.Events` — publish, list, get, inspect event runs, and call Hot functions with `CallHot(ctx, fn, args, opts)`
+- `client.Status(ctx)` — call the public `GET /status` health endpoint without sending an `Authorization` header
+- `client.Events` — publish (optionally passing a caller-supplied `event_id` for idempotent publishing), list, get, inspect event runs, and call Hot functions with `CallHot(ctx, fn, args, opts)`
 - `client.Streams` — subscribe to run and task updates, wait for run results, publish events atomically (reconnects automatically across the 5-minute subscription limit; set `DisableReconnect` to opt out), and purge a stream's call traces
 - `client.Runs` — list, inspect, subscribe to, wait for, and purge call traces of durable runs
 - `client.Tasks` — get, subscribe to, and wait for durable background tasks
@@ -292,7 +301,7 @@ _, err = customer.Events.Publish(ctx, map[string]any{"event_type": "customer:sig
 | `Orgs.Get(ctx, orgID)` / `Orgs.Update(ctx, orgID, {"state": ...})` | `GET`/`PATCH /v1/orgs/{org_id}` |
 | `Orgs.Usage(ctx, parentOrgID)` | `GET /v1/orgs/{org_id}/usage` (account usage; parent organization only) |
 | `Orgs.PurgeCalls(ctx, orgID, includeSubOrgs)` | `DELETE /v1/orgs/{org_id}/calls` |
-| `Orgs.ListEnvs` / `CreateEnv` / `GetEnv` | `/v1/orgs/{org_id}/envs[/{env_id}]` |
+| `Orgs.ListEnvs` / `ListEnvsWithQuery` / `CreateEnv` / `GetEnv` | `/v1/orgs/{org_id}/envs[/{env_id}]` (`ListEnvsWithQuery` accepts `limit`, `offset`) |
 | `Orgs.ListAPIKeys` / `CreateAPIKey` | `/v1/orgs/{org_id}/api-keys` (org keys) |
 | `Orgs.ListEnvAPIKeys` / `CreateEnvAPIKey` | `/v1/orgs/{org_id}/envs/{env_id}/api-keys` (environment keys) |
 | `Orgs.Env(orgID, envID).Projects` / `.Builds` / `.Context` | `/v1/orgs/{org_id}/envs/{env_id}/projects/...`, `/builds` |
@@ -305,7 +314,8 @@ must fit inside the org key's own grants, and their `token` is returned only
 once (also by `Rotate`, whose `overlap_seconds` keeps the previous secret
 working for a while). Revoking or narrowing a key restricts everything it
 issued, including service keys and sessions created with an environment key it
-minted.
+minted. An API key's `status` field reports `"active"`, `"disabled"` (for
+example while its sub-organization is suspended), `"revoked"`, or `"expired"`.
 
 `client.Org.Usage` with an environment credential reports only that
 environment's consumption (`usage_scope: "environment"`) against the

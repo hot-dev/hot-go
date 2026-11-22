@@ -12,6 +12,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 const defaultSource = "http://localhost:4681/openapi.json"
@@ -72,7 +73,8 @@ func main() {
 func loadSpec(source string) (map[string]any, error) {
 	var payload []byte
 	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
-		resp, err := http.Get(source)
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Get(source)
 		if err != nil {
 			return nil, err
 		}

@@ -21,7 +21,11 @@ func (r *DomainsResource) List(ctx context.Context) (map[string]any, error) {
 
 // Get returns a single domain.
 func (r *DomainsResource) Get(ctx context.Context, domainID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/domains/"+enc(domainID), nil, nil)
+	domainSeg, err := encSegment("domain_id", domainID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/domains/"+domainSeg, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -30,12 +34,20 @@ func (r *DomainsResource) Get(ctx context.Context, domainID string) (map[string]
 
 // Delete deletes a domain.
 func (r *DomainsResource) Delete(ctx context.Context, domainID string) error {
-	return r.transport.delete(ctx, "/domains/"+enc(domainID), nil)
+	domainSeg, err := encSegment("domain_id", domainID)
+	if err != nil {
+		return err
+	}
+	return r.transport.delete(ctx, "/domains/"+domainSeg, nil)
 }
 
 // Verify triggers domain verification.
 func (r *DomainsResource) Verify(ctx context.Context, domainID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "POST", "/domains/"+enc(domainID)+"/verify", nil, nil)
+	domainSeg, err := encSegment("domain_id", domainID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "POST", "/domains/"+domainSeg+"/verify", nil, nil)
 	if err != nil {
 		return nil, err
 	}

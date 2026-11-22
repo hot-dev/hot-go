@@ -7,12 +7,20 @@ type ContextResource struct{ transport *transport }
 
 // List returns the context variable list envelope for a project.
 func (r *ContextResource) List(ctx context.Context, project string) (map[string]any, error) {
-	return r.transport.requestJSON(ctx, "GET", "/projects/"+enc(project)+"/context", nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	return r.transport.requestJSON(ctx, "GET", "/projects/"+projectSeg+"/context", nil, nil)
 }
 
 // Create creates a context variable.
 func (r *ContextResource) Create(ctx context.Context, project string, body map[string]any) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "POST", "/projects/"+enc(project)+"/context", body, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "POST", "/projects/"+projectSeg+"/context", body, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -21,7 +29,15 @@ func (r *ContextResource) Create(ctx context.Context, project string, body map[s
 
 // Update replaces a context variable.
 func (r *ContextResource) Update(ctx context.Context, project, key string, body map[string]any) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "PUT", "/projects/"+enc(project)+"/context/"+enc(key), body, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	keySeg, err := encSegment("key", key)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "PUT", "/projects/"+projectSeg+"/context/"+keySeg, body, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -30,5 +46,13 @@ func (r *ContextResource) Update(ctx context.Context, project, key string, body 
 
 // Delete deletes a context variable.
 func (r *ContextResource) Delete(ctx context.Context, project, key string) error {
-	return r.transport.delete(ctx, "/projects/"+enc(project)+"/context/"+enc(key), nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return err
+	}
+	keySeg, err := encSegment("key", key)
+	if err != nil {
+		return err
+	}
+	return r.transport.delete(ctx, "/projects/"+projectSeg+"/context/"+keySeg, nil)
 }
