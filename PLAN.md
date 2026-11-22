@@ -18,7 +18,8 @@ resources, SSE streaming, errors) and follows the shared SDK conventions.
 
 ## Tech choices
 
-- **Zero runtime dependencies**: `net/http`, `encoding/json`, `bufio` for SSE.
+- **Zero runtime dependencies**: `net/http`, `encoding/json`, and an
+  incremental WHATWG-compliant SSE byte parser in `sse.go`.
   This is a major selling point for a Go SDK; nothing in the API surface needs more.
 - **Context everywhere**: every API method takes `context.Context` as its first
   argument. No separate sync/async split — goroutines are the async story.
@@ -38,16 +39,15 @@ resources, SSE streaming, errors) and follows the shared SDK conventions.
 ## Architecture
 
 ```
-client.go       — Client struct, NewClient, Request()/RequestRaw() escape hatches
-transport.go    — auth header, JSON round-trip, error mapping
-errors.go
-sse.go          — SSE parser over bufio.Scanner
-streams.go      — Subscribe / SubscribeWithEvent returning iter.Seq2[StreamEvent, error]
-                  (plus a lower-level *Subscription with Next() for pre-rangefunc users
-                  if we want; start with iter.Seq2 only), WaitForRunResult
+client.go       — Client struct, NewClient, Status(), Request()/RequestRaw() escape hatches
+transport.go    — auth header, safe redirects, JSON/raw/SSE round-trip, retries, error mapping
+errors.go       — *APIError, *KeyScopeError, Retry-After parsing
+sse.go          — incremental WHATWG SSE byte parser (CRLF/LF/CR, BOM, size cap)
+reconnect.go    — shared durable waiter reconnect policy & runTracker
+streams.go      — Subscribe / SubscribePost / SubscribeWithEvent (iter.Seq2), WaitForRunResult
 blobs.go, builds.go, contextvars.go, domains.go, env.go, events.go, files.go,
-org.go, projects.go, runs.go, servicekeys.go, sessions.go   — 13 resource namespaces,
-                  ~60 operations, exposed as client.Events.Publish(ctx, ...) etc.
+org.go, orgs.go, projects.go, runs.go, servicekeys.go, sessions.go, tasks.go
+                — 16 resource namespaces (+ Client.Status), 85 OpenAPI operations
 ```
 
 Behavioral contract to preserve:
@@ -78,8 +78,9 @@ Behavioral contract to preserve:
   `http://localhost:4681/openapi.json`. Test asserts every operation has a
   resource method.
 - **Live smoke test** (optional): behind a build tag or `HOT_API_KEY` env guard.
-- CI: `gofmt -l`, `go vet`, `golangci-lint`, `go test -race ./...` on the two
-  most recent Go versions, pushes/PRs to `main`.
+- CI: `gofmt -l`, `go vet`, `go test -race ./...` on Go 1.23, oldstable, and
+  stable, plus `hot dev` integration and PostgreSQL org API isolation jobs on
+  pushes/PRs to `main`.
 
 ## Publishing (no registry — the repo is the release)
 
@@ -89,7 +90,9 @@ There is nothing to configure with any registry. One-time setup (Curt):
 2. That's it. No tokens, no accounts, no signing.
 
 Release flow:
-- Bump nothing in-code (Go has no version file) — commit, tag `v<version>`, push.
+- Bump `const Version` in `client.go` — commit, tag `v<version>`, push. The
+  release workflow verifies that the tag matches `v` + `Version` before
+  warming `proxy.golang.org`.
 - `proxy.golang.org` indexes the tag lazily on first `go get`; to make it
   immediate, run
   `GOPROXY=proxy.golang.org go list -m github.com/hot-dev/hot-go@v<version>`

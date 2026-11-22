@@ -36,8 +36,8 @@ var coverage = map[string]string{
 	"DELETE /v1/api-keys/{key_id}":                  "APIKeys.Revoke",
 	"POST /v1/api-keys/{key_id}/rotate":             "APIKeys.Rotate",
 
-	// Public health endpoint, not part of authenticated SDK resources.
-	"GET /status": "",
+	// Public health endpoint; does not send an Authorization header.
+	"GET /status": "Status",
 
 	"GET /v1/projects":                                     "Projects.List",
 	"POST /v1/projects":                                    "Projects.Create",
@@ -161,6 +161,12 @@ func TestCoveredOperationsPointToExistingSDKMethods(t *testing.T) {
 			continue
 		}
 		parts := strings.SplitN(sdk, ".", 2)
+		if len(parts) == 1 {
+			if !reflect.ValueOf(client).MethodByName(parts[0]).IsValid() {
+				t.Errorf("%s -> %s: no method %q on Client", key, sdk, parts[0])
+			}
+			continue
+		}
 		var field reflect.Value
 		if parts[0] == "OrgEnv" {
 			parts = strings.SplitN(parts[1], ".", 2)

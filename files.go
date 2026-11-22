@@ -18,7 +18,11 @@ func (r *FilesResource) List(ctx context.Context, query url.Values) (map[string]
 
 // Get returns a single file's metadata.
 func (r *FilesResource) Get(ctx context.Context, fileID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/files/"+enc(fileID), nil, nil)
+	fileSeg, err := encSegment("file_id", fileID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/files/"+fileSeg, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -27,23 +31,35 @@ func (r *FilesResource) Get(ctx context.Context, fileID string) (map[string]any,
 
 // Delete deletes a file.
 func (r *FilesResource) Delete(ctx context.Context, fileID string) error {
-	return r.transport.delete(ctx, "/files/"+enc(fileID), nil)
+	fileSeg, err := encSegment("file_id", fileID)
+	if err != nil {
+		return err
+	}
+	return r.transport.delete(ctx, "/files/"+fileSeg, nil)
 }
 
 // Download returns the raw HTTP response streaming the file content. The
 // caller must close the response body.
 func (r *FilesResource) Download(ctx context.Context, fileID string) (*http.Response, error) {
-	return r.transport.requestRaw(ctx, "GET", "/files/"+enc(fileID)+"/download", nil, nil, nil)
+	fileSeg, err := encSegment("file_id", fileID)
+	if err != nil {
+		return nil, err
+	}
+	return r.transport.requestRaw(ctx, "GET", "/files/"+fileSeg+"/download", nil, nil, nil)
 }
 
 // Upload uploads content to a slash-separated file path. contentType may be
 // "" to let the server infer it.
 func (r *FilesResource) Upload(ctx context.Context, path string, content []byte, contentType string) (map[string]any, error) {
+	encodedPath, err := encPath(path)
+	if err != nil {
+		return nil, err
+	}
 	headers := http.Header{"Accept": {"application/json"}}
 	if contentType != "" {
 		headers.Set("Content-Type", contentType)
 	}
-	resp, err := r.transport.requestRaw(ctx, "PUT", "/files/upload/"+encPath(path), bytes.NewReader(content), headers, nil)
+	resp, err := r.transport.requestRaw(ctx, "PUT", "/files/upload/"+encodedPath, bytes.NewReader(content), headers, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -61,8 +77,12 @@ func (r *FilesResource) InitiateUpload(ctx context.Context, body map[string]any)
 
 // UploadPart uploads one part of a multipart upload.
 func (r *FilesResource) UploadPart(ctx context.Context, uploadID string, partNumber int, content []byte) (map[string]any, error) {
+	uploadSeg, err := encSegment("upload_id", uploadID)
+	if err != nil {
+		return nil, err
+	}
 	headers := http.Header{"Accept": {"application/json"}}
-	path := fmt.Sprintf("/files/uploads/%s/%d", enc(uploadID), partNumber)
+	path := fmt.Sprintf("/files/uploads/%s/%d", uploadSeg, partNumber)
 	resp, err := r.transport.requestRaw(ctx, "PUT", path, bytes.NewReader(content), headers, nil)
 	if err != nil {
 		return nil, err
@@ -72,7 +92,11 @@ func (r *FilesResource) UploadPart(ctx context.Context, uploadID string, partNum
 
 // CompleteUpload finishes a multipart upload.
 func (r *FilesResource) CompleteUpload(ctx context.Context, uploadID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "POST", "/files/uploads/"+enc(uploadID)+"/complete", nil, nil)
+	uploadSeg, err := encSegment("upload_id", uploadID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "POST", "/files/uploads/"+uploadSeg+"/complete", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -81,5 +105,9 @@ func (r *FilesResource) CompleteUpload(ctx context.Context, uploadID string) (ma
 
 // AbortUpload cancels a multipart upload.
 func (r *FilesResource) AbortUpload(ctx context.Context, uploadID string) error {
-	return r.transport.delete(ctx, "/files/uploads/"+enc(uploadID), nil)
+	uploadSeg, err := encSegment("upload_id", uploadID)
+	if err != nil {
+		return err
+	}
+	return r.transport.delete(ctx, "/files/uploads/"+uploadSeg, nil)
 }

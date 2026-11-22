@@ -24,7 +24,11 @@ func (r *SessionsResource) List(ctx context.Context, query url.Values) (map[stri
 
 // Revoke revokes one session.
 func (r *SessionsResource) Revoke(ctx context.Context, sessionID string) error {
-	return r.transport.delete(ctx, "/sessions/"+enc(sessionID), nil)
+	sessionSeg, err := encSegment("session_id", sessionID)
+	if err != nil {
+		return err
+	}
+	return r.transport.delete(ctx, "/sessions/"+sessionSeg, nil)
 }
 
 // RevokeAll revokes every session.

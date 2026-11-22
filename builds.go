@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // BuildsResource uploads, deploys, and inspects builds.
@@ -31,12 +32,24 @@ func (r *BuildsResource) List(ctx context.Context, query url.Values) (map[string
 
 // ListForProject returns the build list envelope for one project.
 func (r *BuildsResource) ListForProject(ctx context.Context, project string, query url.Values) (map[string]any, error) {
-	return r.transport.requestJSON(ctx, "GET", "/projects/"+enc(project)+"/builds", nil, query)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	return r.transport.requestJSON(ctx, "GET", "/projects/"+projectSeg+"/builds", nil, query)
 }
 
 // Get returns a single build.
 func (r *BuildsResource) Get(ctx context.Context, project, buildID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/projects/"+enc(project)+"/builds/"+enc(buildID), nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	buildSeg, err := encSegment("build_id", buildID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/projects/"+projectSeg+"/builds/"+buildSeg, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +58,11 @@ func (r *BuildsResource) Get(ctx context.Context, project, buildID string) (map[
 
 // Deployed returns the project's deployed build.
 func (r *BuildsResource) Deployed(ctx context.Context, project string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/projects/"+enc(project)+"/builds/deployed", nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/projects/"+projectSeg+"/builds/deployed", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +71,11 @@ func (r *BuildsResource) Deployed(ctx context.Context, project string) (map[stri
 
 // Live returns the project's live build.
 func (r *BuildsResource) Live(ctx context.Context, project string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "GET", "/projects/"+enc(project)+"/builds/live", nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "GET", "/projects/"+projectSeg+"/builds/live", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -63,19 +84,27 @@ func (r *BuildsResource) Live(ctx context.Context, project string) (map[string]a
 
 // Upload uploads a build archive as multipart form data.
 func (r *BuildsResource) Upload(ctx context.Context, project string, upload BuildUpload) (map[string]any, error) {
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
 	if upload.File == nil {
 		return nil, fmt.Errorf("hot: BuildUpload.File is required")
+	}
+	if strings.TrimSpace(upload.Hash) == "" {
+		return nil, fmt.Errorf("hot: BuildUpload.Hash is required")
 	}
 
 	body, contentType, err := encodeBuildUpload(upload)
 	if err != nil {
 		return nil, err
 	}
+	defer body.Close()
 	headers := http.Header{
 		"Accept":       {"application/json"},
 		"Content-Type": {contentType},
 	}
-	resp, err := r.transport.requestRaw(ctx, "POST", "/projects/"+enc(project)+"/builds", body, headers, nil)
+	resp, err := r.transport.requestRaw(ctx, "POST", "/projects/"+projectSeg+"/builds", body, headers, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -85,19 +114,35 @@ func (r *BuildsResource) Upload(ctx context.Context, project string, upload Buil
 // Download returns the raw HTTP response streaming the build archive. The
 // caller must close the response body.
 func (r *BuildsResource) Download(ctx context.Context, project, buildID string) (*http.Response, error) {
-	return r.transport.requestRaw(ctx, "GET", "/projects/"+enc(project)+"/builds/"+enc(buildID)+"/download", nil, nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	buildSeg, err := encSegment("build_id", buildID)
+	if err != nil {
+		return nil, err
+	}
+	return r.transport.requestRaw(ctx, "GET", "/projects/"+projectSeg+"/builds/"+buildSeg+"/download", nil, nil, nil)
 }
 
 // Deploy deploys a build.
 func (r *BuildsResource) Deploy(ctx context.Context, project, buildID string) (map[string]any, error) {
-	envelope, err := r.transport.requestJSON(ctx, "POST", "/projects/"+enc(project)+"/builds/"+enc(buildID)+"/deploy", nil, nil)
+	projectSeg, err := encSegment("project", project)
+	if err != nil {
+		return nil, err
+	}
+	buildSeg, err := encSegment("build_id", buildID)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := r.transport.requestJSON(ctx, "POST", "/projects/"+projectSeg+"/builds/"+buildSeg+"/deploy", nil, nil)
 	if err != nil {
 		return nil, err
 	}
 	return dataObject(envelope), nil
 }
 
-func encodeBuildUpload(upload BuildUpload) (io.Reader, string, error) {
+func encodeBuildUpload(upload BuildUpload) (*io.PipeReader, string, error) {
 	reader, writer := io.Pipe()
 	form := multipart.NewWriter(writer)
 

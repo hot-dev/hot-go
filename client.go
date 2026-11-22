@@ -2,6 +2,7 @@ package hot
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -29,6 +30,16 @@ type Config struct {
 	// proxies or transports. Do not set http.Client.Timeout on a client used
 	// for SSE subscriptions — it would sever long-lived streams.
 	HTTPClient *http.Client
+}
+
+// String formats Config for logging with Token redacted.
+func (c Config) String() string {
+	token := ""
+	if c.Token != "" {
+		token = "[REDACTED]"
+	}
+	return fmt.Sprintf("hot.Config{Token:%q, BaseURL:%q, Timeout:%s, HTTPClient:%t}",
+		token, c.BaseURL, c.Timeout, c.HTTPClient != nil)
 }
 
 // Client is a Hot API v1 client. Construct it with NewClient; the resource
@@ -85,6 +96,12 @@ func NewClient(cfg Config) (*Client, error) {
 
 // BaseURL returns the configured base URL without the /v1 suffix.
 func (c *Client) BaseURL() string { return c.transport.baseURL }
+
+// Status calls the public GET /status health endpoint without sending an
+// Authorization header and returns the unwrapped JSON object.
+func (c *Client) Status(ctx context.Context) (map[string]any, error) {
+	return c.transport.requestStatus(ctx)
+}
 
 // Request calls a JSON API endpoint that does not yet have a resource helper.
 // path is relative to /v1 and the returned map is the response envelope.
