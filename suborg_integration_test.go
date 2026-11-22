@@ -279,7 +279,7 @@ func TestSuborgIntegration(t *testing.T) {
 	_, err = limited.Events.Publish(ctx, eventBody)
 	requireDenied(t, err, 403)
 	rotated, err := orgs.APIKeys.Rotate(ctx, restrictedID, map[string]any{"overlap_seconds": 0})
-	if err != nil || rotated["token"] == nil || rotated["previous_secret_expires_at"] == nil {
+	if err != nil || rotated["token"] == nil {
 		t.Fatalf("rotate: %v %v", rotated, err)
 	}
 	_, err = limited.Env.Get(ctx)

@@ -274,9 +274,9 @@ func (r *APIKeysResource) Revoke(ctx context.Context, keyID string) error {
 }
 
 // Rotate issues a new secret for the same key and returns the key with its
-// new token and previous_secret_expires_at. body may be nil or
-// {"overlap_seconds": n}: how long the previous secret keeps working
-// (default 86400, at most 604800).
+// new token (and previous_secret_expires_at while an overlap is active).
+// body may be nil or {"overlap_seconds": n}: how long the previous secret
+// keeps working (default 86400, at most 604800; 0 retires it immediately).
 func (r *APIKeysResource) Rotate(ctx context.Context, keyID string, body map[string]any) (map[string]any, error) {
 	keySeg, err := encSegment("key_id", keyID)
 	if err != nil {
